@@ -29,11 +29,12 @@ RUN echo "TARGETARCH = '${TARGETARCH}' TARGETOS='${TARGETOS}'" && \
     go build ${BUILD_FLAGS} -tags strictfipsruntime -a -o /workspace/kube-scheduler \
     cmd/scheduler/main.go
 
-# install useradd command
+# install useradd command and security fixes
 RUN dnf --installroot=/tmp/ubi-micro \
     --nodocs --setopt=install_weak_deps=False \
     install -y \
-    shadow-utils openssl-libs openssl-fips-provider && \
+    shadow-utils openssl-libs openssl-fips-provider \
+    libcap-2.48-10.el9_7.1 && \
     dnf --installroot=/tmp/ubi-micro \
     clean all
 
