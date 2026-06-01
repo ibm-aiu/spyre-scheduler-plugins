@@ -42,11 +42,8 @@ FROM registry.access.redhat.com/ubi9/ubi-micro:${BASE_UBI_IMAGE_TAG}
 
 WORKDIR /
 
-ARG VERSION
-
 LABEL io.k8s.display-name="Spyre Scheduler"
 LABEL name="Spyre Scheduler"
-LABEL version="${VERSION}"
 LABEL release="N/A"
 LABEL summary="Allow the scheduling of Spyre workloads on Spyre nodes"
 LABEL description="See summary"
