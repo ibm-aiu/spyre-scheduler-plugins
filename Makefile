@@ -113,11 +113,11 @@ clean:
 # targets for spyre-scheduler-plugins #
 # ----------------------------------- #
 
+MAKEFILE_PATH					:= $(abspath $(lastword $(MAKEFILE_LIST)))
+REPO_ROOT			 			:= $(abspath $(patsubst %/,%,$(dir $(MAKEFILE_PATH))))
 DOCKERFILE_FIPS140_SCHEDULER	?= "build/scheduler/Dockerfile.fips140"
 CONTROLLER_GEN					?= $(LOCALBIN)/controller-gen
 CONTROLLER_TOOLS_VERSION		?= v0.17.3
-FIPS_IMAGE_NAME					:= spyre-scheduler
-FIPS_IMAGE						:= $(REGISTRY)/$(FIPS_IMAGE_NAME):$(VERSION)
 
 # Shamesly copied from: https://github.com/opendatahub-io/opendatahub-operator/blob/a08c94a226585e43387ad263e2653c0fd43130f1/Makefile#L132C1-L139C1
 define go-mod-version
@@ -144,10 +144,11 @@ install-crd: $(CONTROLLER_GEN)
 	$(call fetch-external-crds,github.com/ibm-aiu/spyre-operator,api/v1alpha1)
 
 .PHONY: build-fips140-scheduler-image
+build-fips140-scheduler-image: VERSION=$(shell cat $(REPO_ROOT)/VERSION)
+build-fips140-scheduler-image: IMAGE=ghcr.io/ibm-aiu/spyre-scheduler:$(VERSION)
 build-fips140-scheduler-image: clean
 	$(BUILDER) build --pull \
-		--tag $(FIPS_IMAGE) \
-		--build-arg VERSION="$(VERSION)" \
+		--tag $(IMAGE) \
 		--file $(DOCKERFILE_FIPS140_SCHEDULER) .
 
 .PHONY: docker-build
