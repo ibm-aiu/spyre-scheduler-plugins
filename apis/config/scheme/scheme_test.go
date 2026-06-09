@@ -19,14 +19,17 @@ package scheme
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	schedconfig "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/testing/defaults"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/scheduler-plugins/apis/config"
 	v1 "sigs.k8s.io/scheduler-plugins/apis/config/v1"
@@ -94,6 +97,7 @@ profiles:
 							Name: coscheduling.Name,
 							Args: &config.CoschedulingArgs{
 								PermitWaitingTimeSeconds: 60,
+								PodGroupRejectPercentage: 10,
 							},
 						},
 						{
@@ -113,6 +117,12 @@ profiles:
 						{
 							Name: "DefaultPreemption",
 							Args: &schedconfig.DefaultPreemptionArgs{MinCandidateNodesPercentage: 10, MinCandidateNodesAbsolute: 100},
+						},
+						{
+							Name: "DynamicResources",
+							Args: &schedconfig.DynamicResourcesArgs{
+								FilterTimeout: ptr.To(metav1.Duration{Duration: 10 * time.Second}),
+							},
 						},
 						{
 							Name: "InterPodAffinity",
@@ -182,6 +192,12 @@ profiles:
 						{
 							Name: "DefaultPreemption",
 							Args: &schedconfig.DefaultPreemptionArgs{MinCandidateNodesPercentage: 10, MinCandidateNodesAbsolute: 100},
+						},
+						{
+							Name: "DynamicResources",
+							Args: &schedconfig.DynamicResourcesArgs{
+								FilterTimeout: ptr.To(metav1.Duration{Duration: 10 * time.Second}),
+							},
 						},
 						{
 							Name: "InterPodAffinity",
@@ -365,6 +381,7 @@ profiles:
       kind: CoschedulingArgs
       permitWaitingTimeSeconds: 10
       podGroupBackoffSeconds: 0
+      podGroupRejectPercentage: 0
     name: Coscheduling
   - args:
       apiVersion: kubescheduler.config.k8s.io/v1

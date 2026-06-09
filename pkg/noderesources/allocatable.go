@@ -24,10 +24,12 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
+	fwk "k8s.io/kube-scheduler/framework"
 	schedulerconfig "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
 	"sigs.k8s.io/scheduler-plugins/apis/config"
+	"sigs.k8s.io/scheduler-plugins/apis/config/validation"
 )
 
 // Allocatable is a score plugin that favors nodes based on their allocatable
@@ -59,12 +61,8 @@ func validateResources(resources []schedulerconfig.ResourceSpec) error {
 }
 
 // Score invoked at the score extension point.
-func (alloc *Allocatable) Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
+func (alloc *Allocatable) Score(ctx context.Context, state fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) (int64, *fwk.Status) {
 	logger := klog.FromContext(klog.NewContext(ctx, alloc.logger)).WithValues("ExtensionPoint", "Score")
-	nodeInfo, err := alloc.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
-	if err != nil {
-		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("getting node %q from Snapshot: %v", nodeName, err))
-	}
 
 	// alloc.score favors nodes with least allocatable or most allocatable resources.
 	// It calculates the sum of the node's weighted allocatable resources.
@@ -82,7 +80,7 @@ func (alloc *Allocatable) ScoreExtensions() framework.ScoreExtensions {
 func NewAllocatable(ctx context.Context, allocArgs runtime.Object, h framework.Handle) (framework.Plugin, error) {
 	logger := klog.FromContext(ctx).WithValues("plugin", AllocatableName)
 	// Start with default values.
-	mode := config.Least
+	var mode config.ModeType
 	resToWeightMap := defaultResourcesToWeightMap
 
 	// Update values from args, if specified.
@@ -91,23 +89,19 @@ func NewAllocatable(ctx context.Context, allocArgs runtime.Object, h framework.H
 		if !ok {
 			return nil, fmt.Errorf("want args to be of type NodeResourcesAllocatableArgs, got %T", allocArgs)
 		}
-		if args.Mode != "" {
-			mode = args.Mode
-			if mode != config.Least && mode != config.Most {
-				return nil, fmt.Errorf("invalid mode, got %s", mode)
-			}
+		if args.Mode == "" {
+			args.Mode = config.Least
 		}
-
+		if err := validation.ValidateNodeResourcesAllocatableArgs(args, nil); err != nil {
+			return nil, err
+		}
 		if len(args.Resources) > 0 {
-			if err := validateResources(args.Resources); err != nil {
-				return nil, err
-			}
-
 			resToWeightMap = make(resourceToWeightMap)
 			for _, resource := range args.Resources {
 				resToWeightMap[v1.ResourceName(resource.Name)] = resource.Weight
 			}
 		}
+		mode = args.Mode
 	}
 
 	return &Allocatable{
@@ -147,7 +141,7 @@ func score(logger klog.Logger, capacity int64, mode config.ModeType) int64 {
 }
 
 // NormalizeScore invoked after scoring all nodes.
-func (alloc *Allocatable) NormalizeScore(ctx context.Context, state *framework.CycleState, pod *v1.Pod, scores framework.NodeScoreList) *framework.Status {
+func (alloc *Allocatable) NormalizeScore(ctx context.Context, state fwk.CycleState, pod *v1.Pod, scores framework.NodeScoreList) *fwk.Status {
 	// Find highest and lowest scores.
 	var highest int64 = -math.MaxInt64
 	var lowest int64 = math.MaxInt64
