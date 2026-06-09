@@ -21,11 +21,15 @@ COPY apis/ apis/
 
 ARG BUILD_FLAGS=""
 
-ENV GOTOOLCHAIN="auto"
+ARG GOTOOLCHAIN=local
+ENV GOTOOLCHAIN=${GOTOOLCHAIN}
 
-RUN echo "TARGETARCH = '${TARGETARCH}' TARGETOS='${TARGETOS}'" && \
-    echo "GO ENV DUMP: " && go env GOVERSION && go env GOTOOLDIR && \
-    CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GO111MODULE=on \
+RUN echo "TARGETARCH: ${TARGETARCH}" && \
+    echo "TARGETOS: ${TARGETOS}" && \
+    echo -n "GOVERSION: " && go env GOVERSION && \
+    echo -n "GOTOOLCHAIN: " && go env GOTOOLCHAIN && \
+    echo -n "GONOSUMDB: " && go env GONOSUMDB && \
+    CGO_ENABLED=1 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" GO111MODULE=on GOTOOLCHAIN="${GOTOOLCHAIN}" \
     go build ${BUILD_FLAGS} -tags strictfipsruntime -a -o /workspace/kube-scheduler \
     cmd/scheduler/main.go
 
