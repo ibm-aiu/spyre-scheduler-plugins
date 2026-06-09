@@ -23,11 +23,13 @@ ARG BUILD_FLAGS=""
 
 ARG GOTOOLCHAIN=local
 ENV GOTOOLCHAIN=${GOTOOLCHAIN}
+ENV GOPROXY="https://proxy.golang.org,direct"
 
 RUN echo "TARGETARCH: ${TARGETARCH}" && \
     echo "TARGETOS: ${TARGETOS}" && \
     echo -n "GOVERSION: " && go env GOVERSION && \
     echo -n "GOTOOLCHAIN: " && go env GOTOOLCHAIN && \
+    echo -n "GOPROXY: " && go env GOPROXY && \
     echo -n "GONOSUMDB: " && go env GONOSUMDB && \
     CGO_ENABLED=1 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" GO111MODULE=on GOTOOLCHAIN="${GOTOOLCHAIN}" \
     go build ${BUILD_FLAGS} -tags strictfipsruntime -a -o /workspace/kube-scheduler \
