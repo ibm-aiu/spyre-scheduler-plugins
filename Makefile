@@ -143,12 +143,15 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 install-crd: $(CONTROLLER_GEN)
 	$(call fetch-external-crds,github.com/ibm-aiu/spyre-operator,api/v1alpha1)
 
+# use "auto" for local go build.
+export GOTOOLCHAIN	= auto
 .PHONY: build-fips140-scheduler-image
 build-fips140-scheduler-image: VERSION=$(shell cat $(REPO_ROOT)/VERSION)
 build-fips140-scheduler-image: IMAGE=ghcr.io/ibm-aiu/spyre-scheduler:$(VERSION)
 build-fips140-scheduler-image: clean
 	$(BUILDER) build --pull \
 		--tag $(IMAGE) \
+		--build-arg GOTOOLCHAIN=$(GOTOOLCHAIN) \
 		--file $(DOCKERFILE_FIPS140_SCHEDULER) .
 
 .PHONY: docker-build
