@@ -16,5 +16,8 @@ permissions:
   packages: write # Crucial for pushing to ghcr.io
 
 jobs:
-  build-amd64:
+  build:
     uses: ibm-aiu/spyre-operator-actions/.github/workflows/build-image.yaml@main
+    with:
+      image_name: spyre-scheduler
+      dockerfile: build/scheduler/Dockerfile.fips140
