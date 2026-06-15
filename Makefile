@@ -179,3 +179,9 @@ $(GINKGO):$(LOCALBIN)
 yq: $(YQ) ## Download yq locally if necessary.
 $(YQ): $(LOCALBIN)
 	test -s $(YQ) || GOBIN=$(LOCALBIN) go install github.com/mikefarah/yq/v4@$(YQ_VERSION)
+
+.PHONY: echo-version
+echo-version: VERSION=$(shell cat $(REPO_ROOT)/VERSION)
+echo-version: ## Print (echo) the current version
+	$(info $(VERSION))
+	@echo > /dev/null
