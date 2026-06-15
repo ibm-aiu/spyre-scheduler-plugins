@@ -117,7 +117,12 @@ MAKEFILE_PATH					:= $(abspath $(lastword $(MAKEFILE_LIST)))
 REPO_ROOT			 			:= $(abspath $(patsubst %/,%,$(dir $(MAKEFILE_PATH))))
 DOCKERFILE_FIPS140_SCHEDULER	?= "build/scheduler/Dockerfile.fips140"
 CONTROLLER_GEN					?= $(LOCALBIN)/controller-gen
+GINKGO							?= $(LOCALBIN)/ginkgo
+YQ								?= $(LOCALBIN)/yq
+
 CONTROLLER_TOOLS_VERSION		?= v0.17.3
+GINKGO_VERSION 					?= v2.28.3
+YQ_VERSION						?= v4.29.2
 
 # Shamesly copied from: https://github.com/opendatahub-io/opendatahub-operator/blob/a08c94a226585e43387ad263e2653c0fd43130f1/Makefile#L132C1-L139C1
 define go-mod-version
@@ -150,6 +155,7 @@ build-fips140-scheduler-image: VERSION=$(shell cat $(REPO_ROOT)/VERSION)
 build-fips140-scheduler-image: IMAGE=ghcr.io/ibm-aiu/spyre-scheduler:$(VERSION)
 build-fips140-scheduler-image: clean
 	$(BUILDER) build --pull \
+		--no-cache \
 		--tag $(IMAGE) \
 		--build-arg GOTOOLCHAIN=$(GOTOOLCHAIN) \
 		--file $(DOCKERFILE_FIPS140_SCHEDULER) .
@@ -163,3 +169,13 @@ docker-push: ## Push spyre webhook validator image image for the build host arch
 
 .PHONY: docker-build-push
 docker-build-push: docker-build docker-push
+
+.PHONY: ginkgo
+ginkgo: $(GINKGO) ## Download and install ginkgo
+$(GINKGO):$(LOCALBIN)
+	GOBIN=$(LOCALBIN) go install github.com/onsi/ginkgo/v2/ginkgo@$(GINKGO_VERSION)
+
+.PHONY: yq
+yq: $(YQ) ## Download yq locally if necessary.
+$(YQ): $(LOCALBIN)
+	test -s $(YQ) || GOBIN=$(LOCALBIN) go install github.com/mikefarah/yq/v4@$(YQ_VERSION)
