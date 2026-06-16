@@ -27,21 +27,13 @@ endif
 # REGISTRY is the container registry to push
 # into. The default is to push to the staging
 # registry, not production(registry.k8s.io).
-REGISTRY?=gcr.io/k8s-staging-scheduler-plugins
+REGISTRY?=ghcr.io/ibm-aiu
 RELEASE_VERSION?=v$(shell date +%Y%m%d)-$(shell git describe --tags --match "v*")
 RELEASE_IMAGE?=kube-scheduler:$(RELEASE_VERSION)
 RELEASE_CONTROLLER_IMAGE:=controller:$(RELEASE_VERSION)
 GO_BASE_IMAGE?=golang:$(GO_VERSION)
 DISTROLESS_BASE_IMAGE?=gcr.io/distroless/static:nonroot
 EXTRA_ARGS=""
-
-# VERSION is the scheduler's version
-#
-# The RELEASE_VERSION variable can have one of two formats:
-# v20201009-v0.18.800-46-g939c1c0 - automated build for a commit(not a tag) and also a local build
-# v20200521-v0.18.800             - automated build for a tag
-VERSION?=$(shell echo $(RELEASE_VERSION) | awk -F - '{print $$2}')
-VERSION:=$(or $(VERSION),v0.0.$(shell date +%Y%m%d))
 
 .PHONY: all
 all: build
@@ -115,10 +107,17 @@ clean:
 
 MAKEFILE_PATH					:= $(abspath $(lastword $(MAKEFILE_LIST)))
 REPO_ROOT			 			:= $(abspath $(patsubst %/,%,$(dir $(MAKEFILE_PATH))))
-DOCKERFILE_FIPS140_SCHEDULER	?= "build/scheduler/Dockerfile.fips140"
+DOCKERFILE						?= "build/scheduler/Dockerfile.fips140"
 CONTROLLER_GEN					?= $(LOCALBIN)/controller-gen
 GINKGO							?= $(LOCALBIN)/ginkgo
 YQ								?= $(LOCALBIN)/yq
+DOCKER							?= $(shell command -v podman 2> /dev/null || echo docker)
+DOCKER_GO_BUILD_FLAGS			?= -race
+GOCOVERDIR						?= $(REPO_ROOT)
+VERSION							?= $(shell cat $(REPO_ROOT)/VERSION)
+IMAGE_NAME 						:= $(REGISTRY)/spyre-scheduler
+IMAGE_TAG 						?= $(VERSION)
+IMAGE 							?= $(IMAGE_NAME):$(IMAGE_TAG)
 
 CONTROLLER_TOOLS_VERSION		?= v0.17.3
 GINKGO_VERSION 					?= v2.28.3
@@ -126,7 +125,7 @@ YQ_VERSION						?= v4.29.2
 
 # Shamesly copied from: https://github.com/opendatahub-io/opendatahub-operator/blob/a08c94a226585e43387ad263e2653c0fd43130f1/Makefile#L132C1-L139C1
 define go-mod-version
-$(shell go mod graph | grep $(1) | head -n 1 | cut -d'@' -f 2)
+$(shell go mod graph | grep $(1) 2>/dev/null | head -n 1 | cut -d'@' -f 2)
 endef
 
 define fetch-external-crds
@@ -151,14 +150,12 @@ install-crd: $(CONTROLLER_GEN)
 # use "auto" for local go build.
 export GOTOOLCHAIN	= auto
 .PHONY: build-fips140-scheduler-image
-build-fips140-scheduler-image: VERSION=$(shell cat $(REPO_ROOT)/VERSION)
-build-fips140-scheduler-image: IMAGE=ghcr.io/ibm-aiu/spyre-scheduler:$(VERSION)
 build-fips140-scheduler-image: clean
 	$(BUILDER) build --pull \
 		--no-cache \
 		--tag $(IMAGE) \
 		--build-arg GOTOOLCHAIN=$(GOTOOLCHAIN) \
-		--file $(DOCKERFILE_FIPS140_SCHEDULER) .
+		--file $(DOCKERFILE) .
 
 .PHONY: docker-build
 docker-build: build-fips140-scheduler-image
@@ -185,3 +182,7 @@ echo-version: VERSION=$(shell cat $(REPO_ROOT)/VERSION)
 echo-version: ## Print (echo) the current version
 	$(info $(VERSION))
 	@echo > /dev/null
+
+.PHONY: vendor
+vendor: ## Run vendor
+	go mod vendor
