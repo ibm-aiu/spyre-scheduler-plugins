@@ -18,7 +18,6 @@ package nodeconfig
 
 import (
 	"fmt"
-	"strconv"
 
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 
@@ -27,16 +26,11 @@ import (
 )
 
 const (
-	DefaultMaxNUMANodes = 8 // legacy setting and default value for TopologyManager. NOTE: kube doesn't expose this constant
-
-	LimitNUMANodes = 1024 // basic sanitization, but we will likely need to bump soon enough
+	AttributeScope  = "topologyManagerScope"
+	AttributePolicy = "topologyManagerPolicy"
 )
 
-const (
-	AttributeScope        = "topologyManagerScope"
-	AttributePolicy       = "topologyManagerPolicy"
-	AttributeMaxNUMANodes = "topologyManagerMaxNUMANodes"
-)
+// TODO: handle topologyManagerPolicyOptions added in k8s 1.26
 
 func IsValidScope(scope string) bool {
 	if scope == kubeletconfig.ContainerTopologyManagerScope || scope == kubeletconfig.PodTopologyManagerScope {
@@ -53,25 +47,15 @@ func IsValidPolicy(policy string) bool {
 	return false
 }
 
-func IsValidMaxNUMANodes(value int) bool {
-	// machines always report at least 1 NUMA node anyway, and furthermore the value is used in a division,
-	// so we need to enforce 1 (not 0) as minimum
-	// NOTE: there's no legit upper bound, so care must be taken to cap this value. But still, theoretically
-	// 4096 NUMA nodes is a valid legal value.
-	return value > 1
-}
-
 type TopologyManager struct {
-	Scope        string
-	Policy       string
-	MaxNUMANodes int
+	Scope  string
+	Policy string
 }
 
 func TopologyManagerDefaults() TopologyManager {
 	return TopologyManager{
-		Scope:        kubeletconfig.ContainerTopologyManagerScope,
-		Policy:       kubeletconfig.NoneTopologyManagerPolicy,
-		MaxNUMANodes: DefaultMaxNUMANodes,
+		Scope:  kubeletconfig.ContainerTopologyManagerScope,
+		Policy: kubeletconfig.NoneTopologyManagerPolicy,
 	}
 }
 
@@ -81,12 +65,12 @@ func TopologyManagerFromNodeResourceTopology(lh logr.Logger, nodeTopology *topol
 	// Backward compatibility (v1alpha2 and previous). Deprecated, will be removed when the NRT API moves to v1beta1.
 	cfg.updateFromPolicies(lh, nodeTopology.Name, nodeTopology.TopologyPolicies)
 	// preferred new configuration source (v1alpha2 and onwards)
-	cfg.updateFromAttributes(lh, nodeTopology.Attributes)
+	cfg.updateFromAttributes(nodeTopology.Attributes)
 	return conf
 }
 
 func (conf TopologyManager) String() string {
-	return fmt.Sprintf("policy=%s scope=%s maxNUMANodes=%d", conf.Policy, conf.Scope, conf.MaxNUMANodes)
+	return fmt.Sprintf("policy=%q scope=%q", conf.Policy, conf.Scope)
 }
 
 func (conf TopologyManager) Equal(other TopologyManager) bool {
@@ -96,10 +80,10 @@ func (conf TopologyManager) Equal(other TopologyManager) bool {
 	if conf.Policy != other.Policy {
 		return false
 	}
-	return conf.MaxNUMANodes == other.MaxNUMANodes
+	return true
 }
 
-func (conf *TopologyManager) updateFromAttributes(lh logr.Logger, attrs topologyv1alpha2.AttributeList) {
+func (conf *TopologyManager) updateFromAttributes(attrs topologyv1alpha2.AttributeList) {
 	for _, attr := range attrs {
 		if attr.Name == AttributeScope && IsValidScope(attr.Value) {
 			conf.Scope = attr.Value
@@ -109,22 +93,8 @@ func (conf *TopologyManager) updateFromAttributes(lh logr.Logger, attrs topology
 			conf.Policy = attr.Value
 			continue
 		}
-		if attr.Name == AttributeMaxNUMANodes {
-			if val, err := strconv.Atoi(attr.Value); err == nil && IsValidMaxNUMANodes(val) {
-				conf.MaxNUMANodes = clampMaxNUMANodes(lh, val)
-				continue
-			}
-		}
+		// TODO: handle topologyManagerPolicyOptions added in k8s 1.26
 	}
-}
-
-func clampMaxNUMANodes(lh logr.Logger, val int) int {
-	if val > LimitNUMANodes {
-		// should never happen, so we are verbose
-		lh.Info("capped MaxNUMANodes value to limit", "value", val, "limit", LimitNUMANodes)
-		val = LimitNUMANodes
-	}
-	return val
 }
 
 func (conf *TopologyManager) updateFromPolicies(lh logr.Logger, nodeName string, topologyPolicies []string) {

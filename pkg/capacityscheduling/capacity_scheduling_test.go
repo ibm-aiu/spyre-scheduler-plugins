@@ -23,7 +23,6 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/util/sets"
-	fwk "k8s.io/kube-scheduler/framework"
 
 	gocmp "github.com/google/go-cmp/cmp"
 	v1 "k8s.io/api/core/v1"
@@ -68,7 +67,7 @@ func TestPreFilter(t *testing.T) {
 		name          string
 		podInfos      []podInfo
 		elasticQuotas map[string]*ElasticQuotaInfo
-		expected      []fwk.Code
+		expected      []framework.Code
 	}{
 		{
 			name: "pod subjects to ElasticQuota",
@@ -90,9 +89,9 @@ func TestPreFilter(t *testing.T) {
 					},
 				},
 			},
-			expected: []fwk.Code{
-				fwk.Success,
-				fwk.Unschedulable,
+			expected: []framework.Code{
+				framework.Success,
+				framework.Unschedulable,
 			},
 		},
 		{
@@ -126,8 +125,8 @@ func TestPreFilter(t *testing.T) {
 					},
 				},
 			},
-			expected: []fwk.Code{
-				fwk.Unschedulable,
+			expected: []framework.Code{
+				framework.Unschedulable,
 			},
 		},
 		{
@@ -136,8 +135,8 @@ func TestPreFilter(t *testing.T) {
 				{podName: "ns2-p1", podNamespace: "ns2", memReq: 500},
 			},
 			elasticQuotas: map[string]*ElasticQuotaInfo{},
-			expected: []fwk.Code{
-				fwk.Success,
+			expected: []framework.Code{
+				framework.Success,
 			},
 		},
 	}
@@ -176,7 +175,7 @@ func TestPreFilter(t *testing.T) {
 
 			state := framework.NewCycleState()
 			for i := range pods {
-				if _, got := cs.PreFilter(context.TODO(), state, pods[i], nil); got.Code() != tt.expected[i] {
+				if _, got := cs.PreFilter(context.TODO(), state, pods[i]); got.Code() != tt.expected[i] {
 					t.Errorf("expected %v, got %v : %v", tt.expected[i], got.Code(), got.Message())
 				}
 			}
@@ -194,7 +193,7 @@ func TestPostFilter(t *testing.T) {
 		filteredNodesReader framework.NodeToStatusReader
 		elasticQuotas       map[string]*ElasticQuotaInfo
 		wantResult          *framework.PostFilterResult
-		wantStatus          *fwk.Status
+		wantStatus          *framework.Status
 	}{
 		{
 			name: "in-namespace preemption",
@@ -235,7 +234,7 @@ func TestPostFilter(t *testing.T) {
 				},
 			},
 			wantResult: framework.NewPostFilterResultWithNominatedNode("node-a"),
-			wantStatus: fwk.NewStatus(fwk.Success),
+			wantStatus: framework.NewStatus(framework.Success),
 		},
 		{
 			name: "cross-namespace preemption",
@@ -276,7 +275,7 @@ func TestPostFilter(t *testing.T) {
 				},
 			},
 			wantResult: framework.NewPostFilterResultWithNominatedNode("node-a"),
-			wantStatus: fwk.NewStatus(fwk.Success),
+			wantStatus: framework.NewStatus(framework.Success),
 		},
 		{
 			name: "without elasticQuotas",
@@ -292,7 +291,7 @@ func TestPostFilter(t *testing.T) {
 			filteredNodesReader: makeUnschedulableNodeStatusReader(),
 			elasticQuotas:       map[string]*ElasticQuotaInfo{},
 			wantResult:          framework.NewPostFilterResultWithNominatedNode("node-a"),
-			wantStatus:          fwk.NewStatus(fwk.Success),
+			wantStatus:          framework.NewStatus(framework.Success),
 		},
 	}
 
@@ -372,7 +371,7 @@ func TestReserve(t *testing.T) {
 		name          string
 		pods          []*v1.Pod
 		elasticQuotas map[string]*ElasticQuotaInfo
-		expectedCodes []fwk.Code
+		expectedCodes []framework.Code
 		expected      []map[string]*ElasticQuotaInfo
 	}{
 		{
@@ -396,9 +395,9 @@ func TestReserve(t *testing.T) {
 					},
 				},
 			},
-			expectedCodes: []fwk.Code{
-				fwk.Success,
-				fwk.Success,
+			expectedCodes: []framework.Code{
+				framework.Success,
+				framework.Success,
 			},
 			expected: []map[string]*ElasticQuotaInfo{
 				{
@@ -806,7 +805,7 @@ func TestPodEligibleToPreemptOthers(t *testing.T) {
 		pod                 *v1.Pod
 		existPods           []*v1.Pod
 		nodes               []*v1.Node
-		nominatedNodeStatus *fwk.Status
+		nominatedNodeStatus *framework.Status
 		elasticQuotas       map[string]*ElasticQuotaInfo
 		expected            bool
 	}{
@@ -817,7 +816,7 @@ func TestPodEligibleToPreemptOthers(t *testing.T) {
 			nodes: []*v1.Node{
 				st.MakeNode().Name("node-a").Capacity(res).Obj(),
 			},
-			nominatedNodeStatus: fwk.NewStatus(fwk.UnschedulableAndUnresolvable, tainttoleration.ErrReasonNotMatch),
+			nominatedNodeStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, tainttoleration.ErrReasonNotMatch),
 			elasticQuotas: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
@@ -841,7 +840,7 @@ func TestPodEligibleToPreemptOthers(t *testing.T) {
 			nodes: []*v1.Node{
 				st.MakeNode().Name("node-a").Capacity(res).Obj(),
 			},
-			nominatedNodeStatus: fwk.NewStatus(fwk.UnschedulableAndUnresolvable, tainttoleration.ErrReasonNotMatch),
+			nominatedNodeStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, tainttoleration.ErrReasonNotMatch),
 			elasticQuotas: map[string]*ElasticQuotaInfo{
 				"ns1": {
 					Namespace: "ns1",
@@ -1600,7 +1599,7 @@ func TestDeletePod(t *testing.T) {
 
 func makeUnschedulableNodeStatusReader() *framework.NodeToStatus {
 	nodeStatusReader := framework.NewDefaultNodeToStatus()
-	nodeStatusReader.Set("node-a", fwk.NewStatus(fwk.Unschedulable))
+	nodeStatusReader.Set("node-a", framework.NewStatus(framework.Unschedulable))
 	return nodeStatusReader
 }
 

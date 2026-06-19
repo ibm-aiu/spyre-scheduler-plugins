@@ -13,7 +13,7 @@ import (
 	"regexp"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/kube-scheduler/framework"
+	"k8s.io/kubernetes/pkg/scheduler/framework"
 
 	"k8s.io/klog/v2"
 
@@ -22,8 +22,8 @@ import (
 )
 
 func (ap *SpyrePlugin) Filter(
-	ctx context.Context, cycleState framework.CycleState,
-	pod *corev1.Pod, nodeInfo framework.NodeInfo) *framework.Status {
+	ctx context.Context, cycleState *framework.CycleState,
+	pod *corev1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
 
 	klog.InfoS("starting filter process", "pod", pod, "node", nodeInfo.Node().Name)
 	return ap.filter(ctx, pod, nodeInfo.Node().Name)

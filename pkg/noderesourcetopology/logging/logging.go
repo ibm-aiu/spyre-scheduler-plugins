@@ -20,7 +20,6 @@ import (
 	"reflect"
 
 	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/scheduler-plugins/pkg/util"
 )
 
 // well-known structured log keys
@@ -45,9 +44,8 @@ const (
 )
 
 const (
-	KindContainerInit    string = "init"
-	KindContainerSidecar string = "sidecar"
-	KindContainerApp     string = "app"
+	KindContainerInit string = "init"
+	KindContainerApp  string = "app"
 )
 
 const (
@@ -63,11 +61,4 @@ func PodUID(pod *corev1.Pod) string {
 		return "<nil>"
 	}
 	return string(pod.GetUID())
-}
-
-func GetInitContainerKind(container *corev1.Container) string {
-	if util.IsSidecarInitContainer(container) {
-		return KindContainerSidecar
-	}
-	return KindContainerInit
 }

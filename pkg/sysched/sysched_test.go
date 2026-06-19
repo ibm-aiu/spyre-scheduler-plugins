@@ -404,9 +404,7 @@ func TestScore(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			nodeInfo := framework.NewNodeInfo()
-			nodeInfo.SetNode(&v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "test"}})
-			score, _ := sys.Score(context.Background(), nil, tt.pod, nodeInfo)
+			score, _ := sys.Score(context.Background(), nil, tt.pod, "test")
 			assert.EqualValues(t, tt.expected, score)
 		})
 	}

@@ -29,7 +29,6 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
-	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -116,7 +115,7 @@ type PreFilterState struct {
 }
 
 // Clone the preFilter state.
-func (no *PreFilterState) Clone() fwk.StateData {
+func (no *PreFilterState) Clone() framework.StateData {
 	return no
 }
 
@@ -172,7 +171,7 @@ func New(ctx context.Context, obj runtime.Object, handle framework.Handle) (fram
 // 4. Update cost map of all nodes
 // 5. Get number of satisfied and violated dependencies
 // 6. Get final cost of the given node to be used in the score plugin
-func (no *NetworkOverhead) PreFilter(ctx context.Context, state fwk.CycleState, pod *corev1.Pod, nodes []fwk.NodeInfo) (*framework.PreFilterResult, *fwk.Status) {
+func (no *NetworkOverhead) PreFilter(ctx context.Context, state *framework.CycleState, pod *corev1.Pod) (*framework.PreFilterResult, *framework.Status) {
 	// Init PreFilter State
 	preFilterState := &PreFilterState{
 		scoreEqually: true,
@@ -185,7 +184,7 @@ func (no *NetworkOverhead) PreFilter(ctx context.Context, state fwk.CycleState, 
 	// Check if Pod belongs to an AppGroup
 	agName := networkawareutil.GetPodAppGroupLabel(pod)
 	if len(agName) == 0 { // Return
-		return nil, fwk.NewStatus(fwk.Success, "Pod does not belong to an AppGroup, return")
+		return nil, framework.NewStatus(framework.Success, "Pod does not belong to an AppGroup, return")
 	}
 
 	// Get AppGroup CR
@@ -202,19 +201,19 @@ func (no *NetworkOverhead) PreFilter(ctx context.Context, state fwk.CycleState, 
 
 	// If the pod has no dependencies, return
 	if dependencyList == nil {
-		return nil, fwk.NewStatus(fwk.Success, "Pod has no dependencies, return")
+		return nil, framework.NewStatus(framework.Success, "Pod has no dependencies, return")
 	}
 
 	// Get pods from lister
 	selector := labels.Set(map[string]string{agv1alpha1.AppGroupLabel: agName}).AsSelector()
 	pods, err := no.podLister.List(selector)
 	if err != nil {
-		return nil, fwk.NewStatus(fwk.Success, "Error while returning pods from appGroup, return")
+		return nil, framework.NewStatus(framework.Success, "Error while returning pods from appGroup, return")
 	}
 
 	// Return if pods are not yet allocated for the AppGroup...
 	if len(pods) == 0 {
-		return nil, fwk.NewStatus(fwk.Success, "No pods yet allocated, return")
+		return nil, framework.NewStatus(framework.Success, "No pods yet allocated, return")
 	}
 
 	// Pods already scheduled: Get Scheduled List (Deployment name, replicaID, hostname)
@@ -222,13 +221,13 @@ func (no *NetworkOverhead) PreFilter(ctx context.Context, state fwk.CycleState, 
 	// Check if scheduledList is empty...
 	if len(scheduledList) == 0 {
 		logger.Error(nil, "Scheduled list is empty, return")
-		return nil, fwk.NewStatus(fwk.Success, "Scheduled list is empty, return")
+		return nil, framework.NewStatus(framework.Success, "Scheduled list is empty, return")
 	}
 
 	// Get all nodes
 	nodeList, err := no.handle.SnapshotSharedLister().NodeInfos().List()
 	if err != nil {
-		return nil, fwk.NewStatus(fwk.Error, fmt.Sprintf("Error getting the nodelist: %v", err))
+		return nil, framework.NewStatus(framework.Error, fmt.Sprintf("Error getting the nodelist: %v", err))
 	}
 
 	// Create variables to fill PreFilterState
@@ -263,7 +262,7 @@ func (no *NetworkOverhead) PreFilter(ctx context.Context, state fwk.CycleState, 
 		// Get Satisfied and Violated number of dependencies
 		satisfied, violated, ok := checkMaxNetworkCostRequirements(logger, scheduledList, dependencyList, nodeInfo, region, zone, costMap, no)
 		if ok != nil {
-			return nil, fwk.NewStatus(fwk.Error, fmt.Sprintf("pod hostname not found: %v", ok))
+			return nil, framework.NewStatus(framework.Error, fmt.Sprintf("pod hostname not found: %v", ok))
 		}
 
 		// Update Satisfied and Violated maps
@@ -274,7 +273,7 @@ func (no *NetworkOverhead) PreFilter(ctx context.Context, state fwk.CycleState, 
 		// Get accumulated cost based on pod dependencies
 		cost, ok := no.getAccumulatedCost(scheduledList, dependencyList, nodeInfo.Node().Name, region, zone, costMap)
 		if ok != nil {
-			return nil, fwk.NewStatus(fwk.Error, fmt.Sprintf("getting pod hostname from Snapshot: %v", ok))
+			return nil, framework.NewStatus(framework.Error, fmt.Sprintf("getting pod hostname from Snapshot: %v", ok))
 		}
 		logger.V(6).Info("Node final cost", "cost", cost)
 		finalCostMap[nodeInfo.Node().Name] = cost
@@ -295,7 +294,7 @@ func (no *NetworkOverhead) PreFilter(ctx context.Context, state fwk.CycleState, 
 	}
 
 	state.Write(preFilterStateKey, preFilterState)
-	return nil, fwk.NewStatus(fwk.Success, "PreFilter State updated")
+	return nil, framework.NewStatus(framework.Success, "PreFilter State updated")
 }
 
 // PreFilterExtensions returns prefilter extensions, pod add and remove.
@@ -306,30 +305,30 @@ func (no *NetworkOverhead) PreFilterExtensions() framework.PreFilterExtensions {
 // AddPod from pre-computed data in cycleState.
 // no current need for the NetworkOverhead plugin
 func (no *NetworkOverhead) AddPod(ctx context.Context,
-	cycleState fwk.CycleState,
+	cycleState *framework.CycleState,
 	podToSchedule *corev1.Pod,
-	podToAdd fwk.PodInfo,
-	nodeInfo fwk.NodeInfo) *fwk.Status {
-	return fwk.NewStatus(fwk.Success, "")
+	podToAdd *framework.PodInfo,
+	nodeInfo *framework.NodeInfo) *framework.Status {
+	return framework.NewStatus(framework.Success, "")
 }
 
 // RemovePod from pre-computed data in cycleState.
 // no current need for the NetworkOverhead plugin
 func (no *NetworkOverhead) RemovePod(ctx context.Context,
-	cycleState fwk.CycleState,
+	cycleState *framework.CycleState,
 	podToSchedule *corev1.Pod,
-	podToRemove fwk.PodInfo,
-	nodeInfo fwk.NodeInfo) *fwk.Status {
-	return fwk.NewStatus(fwk.Success, "")
+	podToRemove *framework.PodInfo,
+	nodeInfo *framework.NodeInfo) *framework.Status {
+	return framework.NewStatus(framework.Success, "")
 }
 
 // Filter : evaluate if node can respect maxNetworkCost requirements
 func (no *NetworkOverhead) Filter(ctx context.Context,
-	cycleState fwk.CycleState,
+	cycleState *framework.CycleState,
 	pod *corev1.Pod,
-	nodeInfo fwk.NodeInfo) *fwk.Status {
+	nodeInfo *framework.NodeInfo) *framework.Status {
 	if nodeInfo.Node() == nil {
-		return fwk.NewStatus(fwk.Error, "node not found")
+		return framework.NewStatus(framework.Error, "node not found")
 	}
 	logger := klog.FromContext(klog.NewContext(ctx, no.logger)).WithValues("ExtensionPoint", "Filter")
 
@@ -337,7 +336,7 @@ func (no *NetworkOverhead) Filter(ctx context.Context,
 	preFilterState, err := getPreFilterState(cycleState)
 	if err != nil {
 		logger.Error(err, "Failed to read preFilterState from cycleState", "preFilterStateKey", preFilterStateKey)
-		return fwk.NewStatus(fwk.Error, "not eligible due to failed to read from cycleState")
+		return framework.NewStatus(framework.Error, "not eligible due to failed to read from cycleState")
 	}
 
 	// If scoreEqually, return nil
@@ -353,7 +352,7 @@ func (no *NetworkOverhead) Filter(ctx context.Context,
 
 	// The pod is filtered out if the number of violated dependencies is higher than the satisfied ones
 	if violated > satisfied {
-		return fwk.NewStatus(fwk.Unschedulable,
+		return framework.NewStatus(framework.Unschedulable,
 			fmt.Sprintf("Node %v does not meet several network requirements from Workload dependencies: Satisfied: %v Violated: %v", nodeInfo.Node().Name, satisfied, violated))
 	}
 	return nil
@@ -361,36 +360,35 @@ func (no *NetworkOverhead) Filter(ctx context.Context,
 
 // Score : evaluate score for a node
 func (no *NetworkOverhead) Score(ctx context.Context,
-	cycleState fwk.CycleState,
+	cycleState *framework.CycleState,
 	pod *corev1.Pod,
-	nodeInfo fwk.NodeInfo) (int64, *fwk.Status) {
+	nodeName string) (int64, *framework.Status) {
 	score := framework.MinNodeScore
-	nodeName := nodeInfo.Node().Name
 
 	logger := klog.FromContext(klog.NewContext(ctx, no.logger)).WithValues("ExtensionPoint", "Score")
 	// Get PreFilterState
 	preFilterState, err := getPreFilterState(cycleState)
 	if err != nil {
 		logger.Error(err, "Failed to read preFilterState from cycleState", "preFilterStateKey", preFilterStateKey)
-		return score, fwk.NewStatus(fwk.Error, "not eligible due to failed to read from cycleState, return min score")
+		return score, framework.NewStatus(framework.Error, "not eligible due to failed to read from cycleState, return min score")
 	}
 
 	// If scoreEqually, return minScore
 	if preFilterState.scoreEqually {
-		return score, fwk.NewStatus(fwk.Success, "scoreEqually enabled: minimum score")
+		return score, framework.NewStatus(framework.Success, "scoreEqually enabled: minimum score")
 	}
 
 	// Return Accumulated Cost as score
 	score = preFilterState.finalCostMap[nodeName]
 	logger.V(4).Info("Score:", "pod", pod.GetName(), "node", nodeName, "finalScore", score)
-	return score, fwk.NewStatus(fwk.Success, "Accumulated cost added as score, normalization ensures lower costs are favored")
+	return score, framework.NewStatus(framework.Success, "Accumulated cost added as score, normalization ensures lower costs are favored")
 }
 
 // NormalizeScore : normalize scores since lower scores correspond to lower latency
 func (no *NetworkOverhead) NormalizeScore(ctx context.Context,
-	state fwk.CycleState,
+	state *framework.CycleState,
 	pod *corev1.Pod,
-	scores framework.NodeScoreList) *fwk.Status {
+	scores framework.NodeScoreList) *framework.Status {
 	logger := klog.FromContext(klog.NewContext(ctx, no.logger)).WithValues("ExtensionPoint", "NormalizeScore")
 	logger.V(4).Info("before normalization: ", "scores", scores)
 
@@ -502,7 +500,7 @@ func checkMaxNetworkCostRequirements(
 	logger klog.Logger,
 	scheduledList networkawareutil.ScheduledList,
 	dependencyList []agv1alpha1.DependenciesInfo,
-	nodeInfo fwk.NodeInfo,
+	nodeInfo *framework.NodeInfo,
 	region string,
 	zone string,
 	costMap map[networkawareutil.CostKey]int64,
@@ -638,7 +636,7 @@ func (no *NetworkOverhead) getAccumulatedCost(
 	return cost, nil
 }
 
-func getPreFilterState(cycleState fwk.CycleState) (*PreFilterState, error) {
+func getPreFilterState(cycleState *framework.CycleState) (*PreFilterState, error) {
 	no, err := cycleState.Read(preFilterStateKey)
 	if err != nil {
 		// preFilterState doesn't exist, likely PreFilter wasn't invoked.
