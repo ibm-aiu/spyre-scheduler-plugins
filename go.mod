@@ -9,7 +9,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1
 	github.com/go-logr/logr v1.4.3
 	github.com/google/go-cmp v0.7.0
-	github.com/ibm-aiu/spyre-operator v0.0.0-20260514053656-4427824bf5ba
+	github.com/ibm-aiu/spyre-operator v0.0.0-20260519234905-0b5bb82e7e68
 	github.com/k8stopologyawareschedwg/noderesourcetopology-api v0.1.2
 	github.com/k8stopologyawareschedwg/podfingerprint v0.2.2
 	github.com/onsi/ginkgo/v2 v2.28.3
