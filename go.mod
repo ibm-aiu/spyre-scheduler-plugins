@@ -13,7 +13,7 @@ require (
 	github.com/k8stopologyawareschedwg/noderesourcetopology-api v0.1.2
 	github.com/k8stopologyawareschedwg/podfingerprint v0.2.2
 	github.com/onsi/ginkgo/v2 v2.28.3
-	github.com/onsi/gomega v1.40.0
+	github.com/onsi/gomega v1.41.0
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/paypal/load-watcher v0.2.4
 	github.com/spf13/pflag v1.0.6
@@ -21,12 +21,12 @@ require (
 	go.uber.org/zap v1.28.0
 	golang.org/x/exp v0.0.0-20250103183323-7d7fa50e5329
 	gonum.org/v1/gonum v0.16.0
-	k8s.io/api v0.34.1
-	k8s.io/apimachinery v0.34.1
-	k8s.io/apiserver v0.34.1
-	k8s.io/client-go v0.34.1
+	k8s.io/api v0.32.9
+	k8s.io/apimachinery v0.32.9
+	k8s.io/apiserver v0.32.9
+	k8s.io/client-go v0.32.9
 	k8s.io/code-generator v0.32.7
-	k8s.io/component-base v0.34.1
+	k8s.io/component-base v0.32.9
 	k8s.io/component-helpers v0.32.7
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/kube-scheduler v0.32.7
@@ -120,7 +120,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/mod v0.35.0 // indirect
-	golang.org/x/net v0.54.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
@@ -139,7 +139,7 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	k8s.io/apiextensions-apiserver v0.34.1 // indirect
+	k8s.io/apiextensions-apiserver v0.32.9 // indirect
 	k8s.io/cloud-provider v0.32.7 // indirect
 	k8s.io/controller-manager v0.32.7 // indirect
 	k8s.io/csi-translation-lib v0.32.10 // indirect
