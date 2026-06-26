@@ -29,7 +29,6 @@ import (
 var (
 	defaultPermitWaitingTimeSeconds int64 = 60
 	defaultPodGroupBackoffSeconds   int64 = 0
-	defaultPodGroupRejectPercentage int32 = 10
 
 	defaultNodeResourcesAllocatableMode = Least
 
@@ -112,9 +111,6 @@ func SetDefaults_CoschedulingArgs(obj *CoschedulingArgs) {
 	}
 	if obj.PodGroupBackoffSeconds == nil {
 		obj.PodGroupBackoffSeconds = &defaultPodGroupBackoffSeconds
-	}
-	if obj.PodGroupRejectPercentage == nil {
-		obj.PodGroupRejectPercentage = &defaultPodGroupRejectPercentage
 	}
 }
 

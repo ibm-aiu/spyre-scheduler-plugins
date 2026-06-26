@@ -27,7 +27,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/klog/v2"
-	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 )
@@ -432,7 +431,7 @@ func TestGetNodeRequestsAndLimits(t *testing.T) {
 	pod4Limits := GetResourceLimits(pod4)
 
 	type args struct {
-		podsOnNode  []fwk.PodInfo
+		podsOnNode  []*framework.PodInfo
 		node        *v1.Node
 		pod         *v1.Pod
 		podRequests *framework.Resource
@@ -446,7 +445,7 @@ func TestGetNodeRequestsAndLimits(t *testing.T) {
 		{
 			name: "test-0",
 			args: args{
-				podsOnNode: []fwk.PodInfo{
+				podsOnNode: []*framework.PodInfo{
 					podInfo1,
 					podInfo2},
 				node:        testNode,
@@ -480,7 +479,7 @@ func TestGetNodeRequestsAndLimits(t *testing.T) {
 		{
 			name: "test-1",
 			args: args{
-				podsOnNode: []fwk.PodInfo{
+				podsOnNode: []*framework.PodInfo{
 					podInfo3},
 				node:        testNode,
 				pod:         pod,
@@ -514,7 +513,7 @@ func TestGetNodeRequestsAndLimits(t *testing.T) {
 			name: "test-2",
 			// Test case for Node with low capacity than the requested Pod limits
 			args: args{
-				podsOnNode:  []fwk.PodInfo{},
+				podsOnNode:  []*framework.PodInfo{},
 				node:        testNodeWithLowNodeCapacity,
 				pod:         pod,
 				podRequests: podRequests,
@@ -547,7 +546,7 @@ func TestGetNodeRequestsAndLimits(t *testing.T) {
 			name: "test-3",
 			// Test case for Pod with more Requests than Limits
 			args: args{
-				podsOnNode:  []fwk.PodInfo{},
+				podsOnNode:  []*framework.PodInfo{},
 				node:        testNodeWithLowNodeCapacity,
 				pod:         pod4,
 				podRequests: pod4Requests,

@@ -27,7 +27,6 @@ import (
 	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
-	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -40,23 +39,23 @@ import (
 var _ framework.SharedLister = &fakeSharedLister{}
 
 type fakeSharedLister struct {
-	nodeInfos                                    []fwk.NodeInfo
-	nodeInfoMap                                  map[string]fwk.NodeInfo
-	havePodsWithAffinityNodeInfoList             []fwk.NodeInfo
-	havePodsWithRequiredAntiAffinityNodeInfoList []fwk.NodeInfo
+	nodeInfos                                    []*framework.NodeInfo
+	nodeInfoMap                                  map[string]*framework.NodeInfo
+	havePodsWithAffinityNodeInfoList             []*framework.NodeInfo
+	havePodsWithRequiredAntiAffinityNodeInfoList []*framework.NodeInfo
 }
 
 func NewFakeSharedLister(pods []*v1.Pod, nodes []*v1.Node) framework.SharedLister {
 	nodeInfoMap := createNodeInfoMap(pods, nodes)
-	nodeInfos := make([]fwk.NodeInfo, 0, len(nodeInfoMap))
-	havePodsWithAffinityNodeInfoList := make([]fwk.NodeInfo, 0, len(nodeInfoMap))
-	havePodsWithRequiredAntiAffinityNodeInfoList := make([]fwk.NodeInfo, 0, len(nodeInfoMap))
+	nodeInfos := make([]*framework.NodeInfo, 0, len(nodeInfoMap))
+	havePodsWithAffinityNodeInfoList := make([]*framework.NodeInfo, 0, len(nodeInfoMap))
+	havePodsWithRequiredAntiAffinityNodeInfoList := make([]*framework.NodeInfo, 0, len(nodeInfoMap))
 	for _, v := range nodeInfoMap {
 		nodeInfos = append(nodeInfos, v)
-		if len(v.GetPodsWithAffinity()) > 0 {
+		if len(v.PodsWithAffinity) > 0 {
 			havePodsWithAffinityNodeInfoList = append(havePodsWithAffinityNodeInfoList, v)
 		}
-		if len(v.GetPodsWithRequiredAntiAffinity()) > 0 {
+		if len(v.PodsWithRequiredAntiAffinity) > 0 {
 			havePodsWithRequiredAntiAffinityNodeInfoList = append(havePodsWithRequiredAntiAffinityNodeInfoList, v)
 		}
 	}
@@ -68,14 +67,14 @@ func NewFakeSharedLister(pods []*v1.Pod, nodes []*v1.Node) framework.SharedListe
 	}
 }
 
-func createNodeInfoMap(pods []*v1.Pod, nodes []*v1.Node) map[string]fwk.NodeInfo {
-	nodeNameToInfo := make(map[string]fwk.NodeInfo)
+func createNodeInfoMap(pods []*v1.Pod, nodes []*v1.Node) map[string]*framework.NodeInfo {
+	nodeNameToInfo := make(map[string]*framework.NodeInfo)
 	for _, pod := range pods {
 		nodeName := pod.Spec.NodeName
 		if _, ok := nodeNameToInfo[nodeName]; !ok {
 			nodeNameToInfo[nodeName] = framework.NewNodeInfo()
 		}
-		nodeNameToInfo[nodeName].(*framework.NodeInfo).AddPod(pod)
+		nodeNameToInfo[nodeName].AddPod(pod)
 	}
 
 	for _, node := range nodes {
@@ -96,19 +95,19 @@ func (f *fakeSharedLister) StorageInfos() framework.StorageInfoLister {
 	return nil
 }
 
-func (f *fakeSharedLister) List() ([]fwk.NodeInfo, error) {
+func (f *fakeSharedLister) List() ([]*framework.NodeInfo, error) {
 	return f.nodeInfos, nil
 }
 
-func (f *fakeSharedLister) HavePodsWithAffinityList() ([]fwk.NodeInfo, error) {
+func (f *fakeSharedLister) HavePodsWithAffinityList() ([]*framework.NodeInfo, error) {
 	return f.havePodsWithAffinityNodeInfoList, nil
 }
 
-func (f *fakeSharedLister) HavePodsWithRequiredAntiAffinityList() ([]fwk.NodeInfo, error) {
+func (f *fakeSharedLister) HavePodsWithRequiredAntiAffinityList() ([]*framework.NodeInfo, error) {
 	return f.havePodsWithRequiredAntiAffinityNodeInfoList, nil
 }
 
-func (f *fakeSharedLister) Get(nodeName string) (fwk.NodeInfo, error) {
+func (f *fakeSharedLister) Get(nodeName string) (*framework.NodeInfo, error) {
 	return f.nodeInfoMap[nodeName], nil
 }
 
@@ -126,7 +125,7 @@ type nominator struct {
 	// nominatedPods is a map keyed by a node name and the value is a list of
 	// pods which are nominated to run on the node. These are pods which can be in
 	// the activeQ or unschedulablePods.
-	nominatedPods map[string][]fwk.PodInfo
+	nominatedPods map[string][]*framework.PodInfo
 	// nominatedPodToNode is map keyed by a Pod UID to the node name where it is
 	// nominated.
 	nominatedPodToNode map[types.UID]string
@@ -149,44 +148,44 @@ func (npm *nominator) deleteNominatedPodIfExistsUnlocked(pod *v1.Pod) {
 // This is called during the preemption process after a node is nominated to run
 // the pod. We update the structure before sending a request to update the pod
 // object to avoid races with the following scheduling cycles.
-func (npm *nominator) AddNominatedPod(logger klog.Logger, pi fwk.PodInfo, nominatingInfo *framework.NominatingInfo) {
+func (npm *nominator) AddNominatedPod(logger klog.Logger, pi *framework.PodInfo, nominatingInfo *framework.NominatingInfo) {
 	npm.lock.Lock()
 	npm.addNominatedPodUnlocked(logger, pi, nominatingInfo)
 	npm.lock.Unlock()
 }
 
-func (npm *nominator) addNominatedPodUnlocked(logger klog.Logger, pi fwk.PodInfo, nominatingInfo *framework.NominatingInfo) {
+func (npm *nominator) addNominatedPodUnlocked(logger klog.Logger, pi *framework.PodInfo, nominatingInfo *framework.NominatingInfo) {
 	// Always delete the pod if it already exists, to ensure we never store more than
 	// one instance of the pod.
-	npm.delete(pi.GetPod())
+	npm.delete(pi.Pod)
 
 	var nodeName string
 	if nominatingInfo.Mode() == framework.ModeOverride {
 		nodeName = nominatingInfo.NominatedNodeName
 	} else if nominatingInfo.Mode() == framework.ModeNoop {
-		if pi.GetPod().Status.NominatedNodeName == "" {
+		if pi.Pod.Status.NominatedNodeName == "" {
 			return
 		}
-		nodeName = pi.GetPod().Status.NominatedNodeName
+		nodeName = pi.Pod.Status.NominatedNodeName
 	}
 
 	if npm.podLister != nil {
 		// If the pod was removed or if it was already scheduled, don't nominate it.
-		updatedPod, err := npm.podLister.Pods(pi.GetPod().Namespace).Get(pi.GetPod().Name)
+		updatedPod, err := npm.podLister.Pods(pi.Pod.Namespace).Get(pi.Pod.Name)
 		if err != nil {
-			logger.V(4).Info("Pod doesn't exist in podLister, aborted adding it to the nominator", "pod", klog.KObj(pi.GetPod()))
+			logger.V(4).Info("Pod doesn't exist in podLister, aborted adding it to the nominator", "pod", klog.KObj(pi.Pod))
 			return
 		}
 		if updatedPod.Spec.NodeName != "" {
-			logger.V(4).Info("Pod is already scheduled to a node, aborted adding it to the nominator", "pod", klog.KObj(pi.GetPod()), "node", updatedPod.Spec.NodeName)
+			logger.V(4).Info("Pod is already scheduled to a node, aborted adding it to the nominator", "pod", klog.KObj(pi.Pod), "node", updatedPod.Spec.NodeName)
 			return
 		}
 	}
 
-	npm.nominatedPodToNode[pi.GetPod().UID] = nodeName
+	npm.nominatedPodToNode[pi.Pod.UID] = nodeName
 	for _, npi := range npm.nominatedPods[nodeName] {
-		if npi.GetPod().UID == pi.GetPod().UID {
-			logger.V(4).Info("Pod already exists in the nominator", "pod", klog.KObj(npi.GetPod()))
+		if npi.Pod.UID == pi.Pod.UID {
+			logger.V(4).Info("Pod already exists in the nominator", "pod", klog.KObj(npi.Pod))
 			return
 		}
 	}
@@ -199,7 +198,7 @@ func (npm *nominator) delete(p *v1.Pod) {
 		return
 	}
 	for i, np := range npm.nominatedPods[nnn] {
-		if np.GetPod().UID == p.UID {
+		if np.Pod.UID == p.UID {
 			npm.nominatedPods[nnn] = append(npm.nominatedPods[nnn][:i], npm.nominatedPods[nnn][i+1:]...)
 			if len(npm.nominatedPods[nnn]) == 0 {
 				delete(npm.nominatedPods, nnn)
@@ -211,13 +210,13 @@ func (npm *nominator) delete(p *v1.Pod) {
 }
 
 // UpdateNominatedPod updates the <oldPod> with <newPod>.
-func (npm *nominator) UpdateNominatedPod(logger klog.Logger, oldPod *v1.Pod, newPodInfo fwk.PodInfo) {
+func (npm *nominator) UpdateNominatedPod(logger klog.Logger, oldPod *v1.Pod, newPodInfo *framework.PodInfo) {
 	npm.lock.Lock()
 	defer npm.lock.Unlock()
 	npm.updateNominatedPodUnlocked(logger, oldPod, newPodInfo)
 }
 
-func (npm *nominator) updateNominatedPodUnlocked(logger klog.Logger, oldPod *v1.Pod, newPodInfo fwk.PodInfo) {
+func (npm *nominator) updateNominatedPodUnlocked(logger klog.Logger, oldPod *v1.Pod, newPodInfo *framework.PodInfo) {
 	// In some cases, an Update event with no "NominatedNode" present is received right
 	// after a node("NominatedNode") is reserved for this pod in memory.
 	// In this case, we need to keep reserving the NominatedNode when updating the pod pointer.
@@ -226,7 +225,7 @@ func (npm *nominator) updateNominatedPodUnlocked(logger klog.Logger, oldPod *v1.
 	// (1) NominatedNode info is added
 	// (2) NominatedNode info is updated
 	// (3) NominatedNode info is removed
-	if NominatedNodeName(oldPod) == "" && NominatedNodeName(newPodInfo.GetPod()) == "" {
+	if NominatedNodeName(oldPod) == "" && NominatedNodeName(newPodInfo.Pod) == "" {
 		if nnn, ok := npm.nominatedPodToNode[oldPod.UID]; ok {
 			// This is the only case we should continue reserving the NominatedNode
 			nominatingInfo = &framework.NominatingInfo{
@@ -243,13 +242,13 @@ func (npm *nominator) updateNominatedPodUnlocked(logger klog.Logger, oldPod *v1.
 
 // NominatedPodsForNode returns a copy of pods that are nominated to run on the given node,
 // but they are waiting for other pods to be removed from the node.
-func (npm *nominator) NominatedPodsForNode(nodeName string) []fwk.PodInfo {
+func (npm *nominator) NominatedPodsForNode(nodeName string) []*framework.PodInfo {
 	npm.lock.RLock()
 	defer npm.lock.RUnlock()
 	// Make a copy of the nominated Pods so the caller can mutate safely.
-	pods := make([]fwk.PodInfo, len(npm.nominatedPods[nodeName]))
+	pods := make([]*framework.PodInfo, len(npm.nominatedPods[nodeName]))
 	for i := 0; i < len(pods); i++ {
-		pods[i] = npm.nominatedPods[nodeName][i]
+		pods[i] = npm.nominatedPods[nodeName][i].DeepCopy()
 	}
 	return pods
 }
@@ -264,7 +263,7 @@ func NewPodNominator(podLister listersv1.PodLister) framework.PodNominator {
 func newPodNominator(podLister listersv1.PodLister) *nominator {
 	return &nominator{
 		podLister:          podLister,
-		nominatedPods:      make(map[string][]fwk.PodInfo),
+		nominatedPods:      make(map[string][]*framework.PodInfo),
 		nominatedPodToNode: make(map[types.UID]string),
 	}
 }

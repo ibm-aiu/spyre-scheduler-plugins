@@ -29,7 +29,6 @@ import (
 	"strconv"
 
 	"github.com/paypal/load-watcher/pkg/watcher"
-	fwk "k8s.io/kube-scheduler/framework"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -105,10 +104,13 @@ func (pl *TargetLoadPacking) Name() string {
 	return Name
 }
 
-func (pl *TargetLoadPacking) Score(ctx context.Context, cycleState fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) (int64, *fwk.Status) {
+func (pl *TargetLoadPacking) Score(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
 	logger := klog.FromContext(klog.NewContext(ctx, pl.logger)).WithValues("ExtensionPoint", "Score")
 	score := framework.MinNodeScore
-	nodeName := nodeInfo.Node().Name
+	nodeInfo, err := pl.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
+	if err != nil {
+		return score, framework.NewStatus(framework.Error, fmt.Sprintf("getting node %q from Snapshot: %v", nodeName, err))
+	}
 
 	// get node metrics
 	metrics, allMetrics := pl.collector.GetNodeMetrics(logger, nodeName)
@@ -174,24 +176,24 @@ func (pl *TargetLoadPacking) Score(ctx context.Context, cycleState fwk.CycleStat
 	}
 	if predictedCPUUsage > float64(hostTargetUtilizationPercent) {
 		if predictedCPUUsage > 100 {
-			return score, fwk.NewStatus(fwk.Success, "")
+			return score, framework.NewStatus(framework.Success, "")
 		}
 		penalisedScore := int64(math.Round(float64(hostTargetUtilizationPercent) * (100 - predictedCPUUsage) / (100 - float64(hostTargetUtilizationPercent))))
 		logger.V(6).Info("Penalised score for host", "nodeName", nodeName, "penalisedScore", penalisedScore)
-		return penalisedScore, fwk.NewStatus(fwk.Success, "")
+		return penalisedScore, framework.NewStatus(framework.Success, "")
 	}
 
 	score = int64(math.Round((100-float64(hostTargetUtilizationPercent))*
 		predictedCPUUsage/float64(hostTargetUtilizationPercent) + float64(hostTargetUtilizationPercent)))
 	logger.V(6).Info("Score for host", "nodeName", nodeName, "score", score)
-	return score, fwk.NewStatus(fwk.Success, "")
+	return score, framework.NewStatus(framework.Success, "")
 }
 
 func (pl *TargetLoadPacking) ScoreExtensions() framework.ScoreExtensions {
 	return pl
 }
 
-func (pl *TargetLoadPacking) NormalizeScore(context.Context, fwk.CycleState, *v1.Pod, framework.NodeScoreList) *fwk.Status {
+func (pl *TargetLoadPacking) NormalizeScore(context.Context, *framework.CycleState, *v1.Pod, framework.NodeScoreList) *framework.Status {
 	return nil
 }
 

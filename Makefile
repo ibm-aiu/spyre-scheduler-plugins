@@ -69,7 +69,7 @@ local-image: REGISTRY="localhost:5000/scheduler-plugins"
 local-image: EXTRA_ARGS="--load"
 local-image: clean build-images
 
-.PHONY: push-images
+.PHONY: release-images
 push-images: EXTRA_ARGS="--push"
 push-images: build-images
 
