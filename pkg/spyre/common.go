@@ -52,21 +52,16 @@ func (ap *SpyrePlugin) Name() string {
 
 func New(ctx context.Context, arg runtime.Object, h framework.Handle) (framework.Plugin, error) {
 
-	klog.Info("creating clients with in-cluster config and scheduler's QPS/Burst config")
+	klog.Info("creating spyreClient with InClusterConfig")
+	spyreClient, err := spyreclient.NewClient(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create spyreClient: %w", err)
+	}
+	klog.Info("creating k8sClient with InClusterConfig")
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("Failed to get rest.InClusterConfig(): %w", err)
 	}
-	schedCfg := h.KubeConfig()
-	cfg.QPS = schedCfg.QPS
-	cfg.Burst = schedCfg.Burst
-
-	klog.Info("creating spyreClient")
-	spyreClient, err := spyreclient.NewClient(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create spyreClient: %w", err)
-	}
-	klog.Info("creating k8sClient")
 	k8sClient, err := client.New(cfg, client.Options{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to instantiate k8sClient: %w", err)

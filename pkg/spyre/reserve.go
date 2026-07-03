@@ -14,7 +14,7 @@ import (
 	spyrev1alpha1 "github.com/ibm-aiu/spyre-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
-	"k8s.io/kubernetes/pkg/scheduler/framework"
+	"k8s.io/kube-scheduler/framework"
 )
 
 const (
@@ -26,7 +26,7 @@ const (
 // Reserve converts per-device-type resource requests to per-device request in the Pod, and
 // then add the devices to reservedSpyreInterfaces in SpyreNodeState.
 func (ap *SpyrePlugin) Reserve(
-	ctx context.Context, state *framework.CycleState, p *corev1.Pod, nodeName string) *framework.Status {
+	ctx context.Context, state framework.CycleState, p *corev1.Pod, nodeName string) *framework.Status {
 	klog.Info("start the process in Reserve extension point")
 
 	klog.Info("trying to reserve requested devices")
@@ -139,6 +139,6 @@ func (ap *SpyrePlugin) reserveDevices(ctx context.Context, p *corev1.Pod, nodeNa
 }
 
 // Unreserve deletes the devices which were reserved for the Pod from reservedSpyreInterfaces in SpyreNodeState.
-func (ap *SpyrePlugin) Unreserve(ctx context.Context, state *framework.CycleState, p *corev1.Pod, nodeName string) {
+func (ap *SpyrePlugin) Unreserve(ctx context.Context, state framework.CycleState, p *corev1.Pod, nodeName string) {
 	klog.Infof("Unreserve (ignored): %s/%s", p.Namespace, p.Name)
 }

@@ -33,6 +33,7 @@ import (
 	listerv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
+	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -58,21 +59,23 @@ type PermitState struct {
 	Activate bool
 }
 
-func (s *PermitState) Clone() framework.StateData {
+func (s *PermitState) Clone() fwk.StateData {
 	return &PermitState{Activate: s.Activate}
 }
 
 // Manager defines the interfaces for PodGroup management.
 type Manager interface {
 	PreFilter(context.Context, *corev1.Pod) error
-	Permit(context.Context, *framework.CycleState, *corev1.Pod) Status
+	Permit(context.Context, fwk.CycleState, *corev1.Pod) Status
 	Unreserve(context.Context, *corev1.Pod)
 	GetPodGroup(context.Context, *corev1.Pod) (string, *v1alpha1.PodGroup)
 	GetAssignedPodCount(string) int
 	GetCreationTimestamp(context.Context, *corev1.Pod, time.Time) time.Time
 	DeletePermittedPodGroup(context.Context, string)
-	ActivateSiblings(ctx context.Context, pod *corev1.Pod, state *framework.CycleState)
+	ActivateSiblings(ctx context.Context, pod *corev1.Pod, state fwk.CycleState)
 	BackoffPodGroup(string, time.Duration)
+	MarkPodGroupScheduleFailure(string)
+	ClearPodGroupScheduleFailure(string)
 }
 
 // PodGroupManager defines the scheduling operation called
@@ -88,6 +91,9 @@ type PodGroupManager struct {
 	permittedPG *gocache.Cache
 	// backedOffPG stores the podgorup name which failed scheudling recently.
 	backedOffPG *gocache.Cache
+	// lastFailedSchedulePG stores the last time a PodGroup's scheduling attempt failed.
+	// Used by GetCreationTimestamp to prevent head-of-line blocking.
+	lastFailedSchedulePG sync.Map
 	// podLister is pod lister
 	podLister listerv1.PodLister
 	// assignedPodsByPG stores the pods assumed or bound for podgroups
@@ -127,7 +133,8 @@ func NewPodGroupManager(client client.Client, snapshotSharedLister framework.Sha
 		podLister:            podInformer.Lister(),
 		permittedPG:          gocache.New(3*time.Second, 3*time.Second),
 		backedOffPG:          gocache.New(10*time.Second, 10*time.Second),
-		assignedPodsByPG:     map[string]sets.Set[string]{},
+		// lastFailedSchedulePG is a sync.Map, zero-value ready.
+		assignedPodsByPG: map[string]sets.Set[string]{},
 	}
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: AddPodFactory(pgMgr),
@@ -171,9 +178,22 @@ func (pgMgr *PodGroupManager) BackoffPodGroup(pgName string, backoff time.Durati
 	pgMgr.backedOffPG.Add(pgName, nil, backoff)
 }
 
+// MarkPodGroupScheduleFailure records the current time as the last scheduling failure
+// for the given PodGroup. This timestamp is used by GetCreationTimestamp to prevent
+// head-of-line blocking in the scheduling queue.
+func (pgMgr *PodGroupManager) MarkPodGroupScheduleFailure(pgName string) {
+	pgMgr.lastFailedSchedulePG.Store(pgName, time.Now())
+}
+
+// ClearPodGroupScheduleFailure removes the scheduling failure record for the given PodGroup,
+// so it no longer carries a sort penalty in the scheduling queue.
+func (pgMgr *PodGroupManager) ClearPodGroupScheduleFailure(pgName string) {
+	pgMgr.lastFailedSchedulePG.Delete(pgName)
+}
+
 // ActivateSiblings stashes the pods belonging to the same PodGroup of the given pod
 // in the given state, with a reserved key "kubernetes.io/pods-to-activate".
-func (pgMgr *PodGroupManager) ActivateSiblings(ctx context.Context, pod *corev1.Pod, state *framework.CycleState) {
+func (pgMgr *PodGroupManager) ActivateSiblings(ctx context.Context, pod *corev1.Pod, state fwk.CycleState) {
 	lh := klog.FromContext(ctx)
 	pgName := util.GetPodGroupLabel(pod)
 	if pgName == "" {
@@ -239,9 +259,21 @@ func (pgMgr *PodGroupManager) PreFilter(ctx context.Context, pod *corev1.Pod) er
 		return fmt.Errorf("podLister list pods failed: %w", err)
 	}
 
-	if len(pods) < int(pg.Spec.MinMember) {
+	quorumGap := int(pg.Spec.MinMember) - len(pods)
+	if quorumGap > 0 {
 		return fmt.Errorf("pre-filter pod %v cannot find enough sibling pods, "+
 			"current pods number: %v, minMember of group: %v", pod.Name, len(pods), pg.Spec.MinMember)
+	}
+
+	// Extra check to see how many SchedulingGated Pods can be tolerated.
+	// quorumGap can be negative if a PodGroup's minMember < a workload's replicas.
+	for _, p := range pods {
+		if len(p.Spec.SchedulingGates) > 0 {
+			quorumGap++
+		}
+		if quorumGap > 0 {
+			return fmt.Errorf("pre-filter pod %v cannot proceed due to gated pods in the same PodGroup", pod.Name)
+		}
 	}
 
 	if pg.Spec.MinResources == nil {
@@ -273,7 +305,7 @@ func (pgMgr *PodGroupManager) PreFilter(ctx context.Context, pod *corev1.Pod) er
 }
 
 // Permit permits a pod to run, if the minMember match, it would send a signal to chan.
-func (pgMgr *PodGroupManager) Permit(ctx context.Context, state *framework.CycleState, pod *corev1.Pod) Status {
+func (pgMgr *PodGroupManager) Permit(ctx context.Context, state fwk.CycleState, pod *corev1.Pod) Status {
 	pgFullName, pg := pgMgr.GetPodGroup(ctx, pod)
 	if pgFullName == "" {
 		return PodGroupNotSpecified
@@ -283,8 +315,8 @@ func (pgMgr *PodGroupManager) Permit(ctx context.Context, state *framework.Cycle
 		return PodGroupNotFound
 	}
 
-	pgMgr.RWMutex.RLock()
-	defer pgMgr.RWMutex.RUnlock()
+	pgMgr.RWMutex.Lock()
+	defer pgMgr.RWMutex.Unlock()
 	assigned, exist := pgMgr.assignedPodsByPG[pgFullName]
 	if !exist {
 		assigned = sets.Set[string]{}
@@ -331,10 +363,18 @@ func (pgMgr *PodGroupManager) Unreserve(ctx context.Context, pod *corev1.Pod) {
 }
 
 // GetCreationTimestamp returns the creation time of a podGroup or a pod.
+// If the PodGroup has failed scheduling recently, the failure timestamp is returned
+// instead of the immutable CreationTimestamp, to prevent head-of-line blocking.
 func (pgMgr *PodGroupManager) GetCreationTimestamp(ctx context.Context, pod *corev1.Pod, ts time.Time) time.Time {
 	pgName := util.GetPodGroupLabel(pod)
 	if len(pgName) == 0 {
 		return ts
+	}
+	pgFullName := fmt.Sprintf("%v/%v", pod.Namespace, pgName)
+	// If PodGroup has failed scheduling recently, use the failure timestamp
+	// to prevent head-of-line blocking.
+	if lastFailed, exist := pgMgr.lastFailedSchedulePG.Load(pgFullName); exist {
+		return lastFailed.(time.Time)
 	}
 	var pg v1alpha1.PodGroup
 	if err := pgMgr.client.Get(ctx, types.NamespacedName{Namespace: pod.Namespace, Name: pgName}, &pg); err != nil {
@@ -363,7 +403,7 @@ func (pgMgr *PodGroupManager) GetPodGroup(ctx context.Context, pod *corev1.Pod) 
 
 // CheckClusterResource checks if resource capacity of the cluster can satisfy <resourceRequest>.
 // It returns an error detailing the resource gap if not satisfied; otherwise returns nil.
-func CheckClusterResource(ctx context.Context, nodeList []*framework.NodeInfo, resourceRequest corev1.ResourceList, desiredPodGroupName string) error {
+func CheckClusterResource(ctx context.Context, nodeList []fwk.NodeInfo, resourceRequest corev1.ResourceList, desiredPodGroupName string) error {
 	for _, info := range nodeList {
 		if info == nil || info.Node() == nil {
 			continue
@@ -390,32 +430,32 @@ func GetNamespacedName(obj metav1.Object) string {
 	return fmt.Sprintf("%v/%v", obj.GetNamespace(), obj.GetName())
 }
 
-func getNodeResource(ctx context.Context, info *framework.NodeInfo, desiredPodGroupName string) *framework.Resource {
+func getNodeResource(ctx context.Context, info fwk.NodeInfo, desiredPodGroupName string) fwk.Resource {
 	nodeClone := info.Snapshot()
 	logger := klog.FromContext(ctx)
-	for _, podInfo := range info.Pods {
-		if podInfo == nil || podInfo.Pod == nil {
+	for _, podInfo := range info.GetPods() {
+		if podInfo == nil || podInfo.GetPod() == nil {
 			continue
 		}
-		if util.GetPodGroupFullName(podInfo.Pod) != desiredPodGroupName {
+		if util.GetPodGroupFullName(podInfo.GetPod()) != desiredPodGroupName {
 			continue
 		}
-		nodeClone.RemovePod(logger, podInfo.Pod)
+		nodeClone.RemovePod(logger, podInfo.GetPod())
 	}
 
 	leftResource := framework.Resource{
 		ScalarResources: make(map[corev1.ResourceName]int64),
 	}
-	allocatable := nodeClone.Allocatable
-	requested := nodeClone.Requested
+	allocatable := nodeClone.GetAllocatable()
+	requested := nodeClone.GetRequested()
 
-	leftResource.AllowedPodNumber = allocatable.AllowedPodNumber - len(nodeClone.Pods)
-	leftResource.MilliCPU = allocatable.MilliCPU - requested.MilliCPU
-	leftResource.Memory = allocatable.Memory - requested.Memory
-	leftResource.EphemeralStorage = allocatable.EphemeralStorage - requested.EphemeralStorage
+	leftResource.AllowedPodNumber = allocatable.GetAllowedPodNumber() - len(nodeClone.GetPods())
+	leftResource.MilliCPU = allocatable.GetMilliCPU() - requested.GetMilliCPU()
+	leftResource.Memory = allocatable.GetMemory() - requested.GetMemory()
+	leftResource.EphemeralStorage = allocatable.GetEphemeralStorage() - requested.GetEphemeralStorage()
 
-	for k, allocatableEx := range allocatable.ScalarResources {
-		requestEx, ok := requested.ScalarResources[k]
+	for k, allocatableEx := range allocatable.GetScalarResources() {
+		requestEx, ok := requested.GetScalarResources()[k]
 		if !ok {
 			leftResource.ScalarResources[k] = allocatableEx
 		} else {
