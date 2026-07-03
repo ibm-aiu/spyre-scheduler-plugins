@@ -1,0 +1,22 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: resourceclaimtemplates.resource.k8s.io
+  annotations:
+    api-approved.kubernetes.io: "unapproved, shim CRD for spyre-scheduler informer compatibility on clusters without resource.k8s.io/v1"
+spec:
+  group: resource.k8s.io
+  scope: Namespaced
+  names:
+    plural: resourceclaimtemplates
+    singular: resourceclaimtemplate
+    kind: ResourceClaimTemplate
+    listKind: ResourceClaimTemplateList
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
