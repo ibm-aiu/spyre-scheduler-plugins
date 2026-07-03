@@ -100,6 +100,7 @@ verify:
 .PHONY: clean
 clean:
 	rm -rf ./bin
+	rm -rf ./vendor
 
 # ----------------------------------- #
 # targets for spyre-scheduler-plugins #
