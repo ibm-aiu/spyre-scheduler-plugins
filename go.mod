@@ -1,6 +1,6 @@
 module sigs.k8s.io/scheduler-plugins
 
-go 1.26.4
+go 1.26.7
 
 require (
 	github.com/containers/common v0.62.3
