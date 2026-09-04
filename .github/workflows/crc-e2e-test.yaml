@@ -1,0 +1,52 @@
+# +-------------------------------------------------------------------+
+# | (C) Copyright IBM Corp. 2025, 2026                                |
+# | SPDX-License-Identifier: Apache-2.0                               |
+# +-------------------------------------------------------------------+
+
+name: CRC End to End Test
+
+on:
+  pull_request:
+    types: [labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'GitHub runner to use for the test'
+        required: false
+        type: string
+        default: 'ubuntu-24.04'
+      branch-name:
+        description: 'Branch name to checkout from spyre-operator repo'
+        required: false
+        type: string
+        default: 'main'
+      registry:
+        description: 'Container registry (e.g., ghcr.io/ibm-aiu)'
+        required: false
+        type: string
+        default: 'ghcr.io/ibm-aiu'
+      pr-url:
+        description: 'GitHub Pull Request URL to test.'
+        required: false
+        type: string
+
+concurrency:
+  group: crc-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  crc-e2e-test:
+    if: contains(github.event.pull_request.labels.*.name, 'require-e2e-test') || github.event_name == 'workflow_dispatch'
+    uses: ibm-aiu/spyre-operator-actions/.github/workflows/crc-e2e-test.yaml@main
+    with:
+      runner: ${{ inputs.runner || 'ubuntu-24.04' }}
+      branch-name: ${{ inputs.branch-name || 'main' }}
+      registry: ${{ inputs.registry || 'ghcr.io/ibm-aiu' }}
+      pr-url: ${{ inputs.pr-url || (github.event_name == 'pull_request' && github.event.pull_request.html_url || '') }}
+    secrets:
+      crc-pull-secret: ${{ secrets.CRC_PULL_SECRET_SUNYACH }}
+      github-token: ${{ secrets.GITHUB_TOKEN }}
