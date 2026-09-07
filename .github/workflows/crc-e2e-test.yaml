@@ -48,5 +48,5 @@ jobs:
       registry: ${{ inputs.registry || 'ghcr.io/ibm-aiu' }}
       pr-url: ${{ inputs.pr-url || (github.event_name == 'pull_request' && github.event.pull_request.html_url || '') }}
     secrets:
-      crc-pull-secret: ${{ secrets.CRC_PULL_SECRET_SUNYACH }}
+      crc-pull-secret: ${{ secrets.CRC_PULL_SECRET }}
       github-token: ${{ secrets.GITHUB_TOKEN }}
