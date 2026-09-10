@@ -41,7 +41,7 @@ permissions:
 jobs:
   crc-e2e-test:
     if: contains(github.event.pull_request.labels.*.name, 'require-e2e-test') || github.event_name == 'workflow_dispatch'
-    uses: ibm-aiu/spyre-operator-actions/.github/workflows/crc-e2e-test.yaml@fix-scheduler-e2e-registry
+    uses: ibm-aiu/spyre-operator-actions/.github/workflows/crc-e2e-test.yaml@main
     with:
       runner: ${{ inputs.runner || 'ubuntu-24.04' }}
       branch-name: ${{ inputs.branch-name || 'main' }}
