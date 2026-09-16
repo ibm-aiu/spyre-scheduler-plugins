@@ -6,8 +6,6 @@
 name: CRC End to End Test
 
 on:
-  pull_request:
-    types: [labeled, unlabeled]
   workflow_dispatch:
     inputs:
       runner:
@@ -31,7 +29,7 @@ on:
         type: string
 
 concurrency:
-  group: crc-e2e-${{ github.ref }}
+  group: crc-e2e-${{ inputs.branch-name }}
   cancel-in-progress: true
 
 permissions:
@@ -40,14 +38,12 @@ permissions:
 
 jobs:
   crc-e2e-test:
-    if: contains(github.event.pull_request.labels.*.name, 'require-e2e-test') || github.event_name == 'workflow_dispatch'
     uses: ibm-aiu/spyre-operator-actions/.github/workflows/crc-e2e-test.yaml@main
     with:
-      runner: ${{ inputs.runner || 'ubuntu-24.04' }}
-      branch-name: ${{ inputs.branch-name || 'main' }}
-      registry: ${{ inputs.registry || 'ghcr.io/ibm-aiu' }}
-      pr-url: ${{ inputs.pr-url || (github.event_name == 'pull_request' && github.event.pull_request.html_url || '') }}
-      actions-ref: main
+      runner: ${{ inputs.runner }}
+      branch-name: ${{ inputs.branch-name }}
+      registry: ${{ inputs.registry }}
+      pr-url: ${{ inputs.pr-url }}
     secrets:
       crc-pull-secret: ${{ secrets.CRC_PULL_SECRET }}
       github-token: ${{ secrets.GITHUB_TOKEN }}
