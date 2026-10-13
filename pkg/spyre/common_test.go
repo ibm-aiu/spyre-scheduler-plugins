@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/scheduler-plugins/pkg/spyre"
@@ -424,10 +425,101 @@ var _ = Describe("Common functions", func() {
 			nodeState, err := spyre.CleanupOrphanReservation(ap, ctx, "node1", p)
 			Expect(err).To(BeNil())
 			r := nodeState.Status.Reservations[spyreconst.PfResourceName]
-			Expect(r.PodsUnderScheduling).Should(HaveLen(2))
-			Expect(r.DeviceSets).Should(HaveLen(2))
-			Expect(r.DeviceSets[0]).Should(HaveLen(2))
-			Expect(r.DeviceSets[1]).Should(HaveLen(1))
+
+			// p1 is the Pod being scheduled, so its earlier reservation goes; p4
+			// never existed, so its reservation goes too. p2 and p3 are alive and
+			// keep exactly the devices that were reserved for them.
+			//
+			// The size-matching implementation this replaces got p3 wrong: p3
+			// requests one device, so it was paired with the one-device set that
+			// actually belonged to p4, and p3's own two devices were released
+			// while p3 was still using them.
+			Expect(r.Entries).Should(HaveLen(2))
+			Expect(r.PodsUnderScheduling).Should(HaveExactElements(
+				spyrev1alpha1.Pod{Namespace: ns, Name: "p2"},
+				spyrev1alpha1.Pod{Namespace: ns, Name: "p3"},
+			))
+			Expect(r.DeviceSets).Should(HaveExactElements(
+				[]string{"0000:36:00.0", "0000:39:00.0"},
+				[]string{"0000:9c:00.0", "0000:9d:00.0"},
+			))
+			Expect(r.ReservedDevices()).ShouldNot(ContainElement("0000:20:00.0"))
+		})
+
+		It("keeps a live Pod's device when another Pod of the same size becomes orphan", func() {
+			// The regression this whole change exists for: with every reservation
+			// the same size, releasing one of them must not release another's
+			// devices. Sizes alone cannot tell these three reservations apart.
+			ns := createNewNamespace(ctx, k8sClient)
+
+			// single2 is the one that disappears; single1 and single3 keep running,
+			// so only they exist in the API and only they have a UID to record.
+			live := map[string]*corev1.Pod{}
+			for _, name := range []string{"single1", "single3"} {
+				pod := buildPod(name, ns, spyreconst.PfResourceName, 1)
+				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+				Expect(pod.UID).ShouldNot(BeEmpty())
+				live[name] = pod
+			}
+
+			// The reservations have to be written *after* the Pods exist, because
+			// each one names the generation of the Pod that made it.
+			reserveList := [][]string{{"0000:1c:00.0"}, {"0000:1f:00.0"}, {"0000:20:00.0"}}
+			pSched := []spyrev1alpha1.Pod{
+				{Namespace: ns, Name: "single1", UID: live["single1"].UID},
+				{Namespace: ns, Name: "single2"},
+				{Namespace: ns, Name: "single3", UID: live["single3"].UID},
+			}
+			prepareSpyreNodeState([]string{}, reserveList, pSched)
+
+			newcomer := buildPod("newcomer", ns, spyreconst.PfResourceName, 1)
+			Expect(k8sClient.Create(ctx, newcomer)).To(Succeed())
+
+			nodeState, err := spyre.CleanupOrphanReservation(ap, ctx, "node1", newcomer)
+			Expect(err).To(BeNil())
+
+			// Only single2's device is freed. Matching by size would have been
+			// free to release any of the three, since each set holds one device.
+			r := nodeState.Status.Reservations[spyreconst.PfResourceName]
+			Expect(r.Entries).Should(HaveLen(2))
+			Expect(r.Entries[0].Pod).Should(Equal(pSched[0]))
+			Expect(r.Entries[0].DeviceList).Should(ConsistOf("0000:1c:00.0"))
+			Expect(r.Entries[1].Pod).Should(Equal(pSched[2]))
+			Expect(r.Entries[1].DeviceList).Should(ConsistOf("0000:20:00.0"))
+			Expect(r.ReservedDevices()).ShouldNot(ContainElement("0000:1f:00.0"))
+		})
+
+		It("keeps a same-named predecessor's reservation until the grace period passes", func() {
+			ns := createNewNamespace(ctx, k8sClient)
+			prepareSpyreNodeState([]string{}, [][]string{{"0000:1c:00.0"}}, nil)
+
+			// A runner Pod that reserved a device and then vanished, replaced by a
+			// namesake - the situation ARC runners produce constantly.
+			gone := spyrev1alpha1.Pod{Namespace: ns, Name: "runner", UID: k8stypes.UID("00000000-0000-0000-0000-0000000000ff")}
+			reservedAt := metav1.Now()
+			nodeState, err := spyreClient.GetSpyreNodeState(ctx, "node1")
+			Expect(err).To(BeNil())
+			nodeState.Status.ReserveDevices(spyreconst.PfResourceName, gone, []string{"0000:1c:00.0"}, reservedAt)
+			_, err = spyreClient.UpdateStatus(ctx, nodeState, true)
+			Expect(err).To(BeNil())
+
+			successor := buildPod("runner", ns, spyreconst.PfResourceName, 1)
+			Expect(k8sClient.Create(ctx, successor)).To(Succeed())
+			Expect(successor.UID).ShouldNot(Equal(gone.UID))
+
+			// Within the grace period the predecessor's device stays reserved: its
+			// container may still hold /dev/vfio open.
+			restore := spyre.ExportSetReservationGracePeriod(time.Hour)
+			defer spyre.ExportSetReservationGracePeriod(restore)
+			nodeState, err = spyre.CleanupOrphanReservation(ap, ctx, "node1", successor)
+			Expect(err).To(BeNil())
+			Expect(nodeState.Status.ReservedDevices()).Should(ConsistOf("0000:1c:00.0"))
+
+			// Once it has passed, the device is released.
+			spyre.ExportSetReservationGracePeriod(0)
+			nodeState, err = spyre.CleanupOrphanReservation(ap, ctx, "node1", successor)
+			Expect(err).To(BeNil())
+			Expect(nodeState.Status.ReservedDevices()).Should(BeEmpty())
 		})
 	})
 

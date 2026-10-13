@@ -19,6 +19,9 @@ hack/tools/bin/*
 *.sublime-workspace
 *~
 
+# local Claude Code settings (personal, not shared across contributors)
+.claude/
+
 # Ignore vendor/
 vendor
 config/crd/external

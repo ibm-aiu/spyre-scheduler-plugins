@@ -123,14 +123,16 @@ CONTROLLER_TOOLS_VERSION		?= v0.17.3
 GINKGO_VERSION 					?= v2.28.3
 YQ_VERSION						?= v4.29.2
 
-# Shamelessly copied from: https://github.com/opendatahub-io/opendatahub-operator/blob/a08c94a226585e43387ad263e2653c0fd43130f1/Makefile#L132C1-L139C1
-define go-mod-version
-$(shell go mod graph | grep $(1) 2>/dev/null | head -n 1 | cut -d'@' -f 2)
+# Ask the go tool where a dependency actually lives instead of reconstructing a
+# module cache path: that way a `replace` directive pointing at a local checkout
+# is honoured, and the generated CRDs match the types we are compiling against.
+define module-dir
+$(shell go list -m -f '{{.Dir}}' $(1) 2>/dev/null)
 endef
 
 define fetch-external-crds
 GOFLAGS="-mod=readonly" $(CONTROLLER_GEN) crd \
-paths=$(shell go env GOPATH)/pkg/mod/$(1)@$(call go-mod-version,$(1))/$(2)/... \
+paths=$(call module-dir,$(1))/$(2)/... \
 output:crd:artifacts:config=config/crd/external
 endef
 

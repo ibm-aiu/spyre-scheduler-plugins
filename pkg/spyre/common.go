@@ -12,9 +12,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	spyrev1alpha1 "github.com/ibm-aiu/spyre-operator/api/v1alpha1"
 	spyreconst "github.com/ibm-aiu/spyre-operator/const"
@@ -23,10 +26,9 @@ import (
 
 	"golang.org/x/exp/maps"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -74,6 +76,11 @@ func New(ctx context.Context, arg runtime.Object, h framework.Handle) (framework
 	return &SpyrePlugin{spyreClient: spyreClient, k8sClient: k8sClient}, nil
 }
 
+// SelectDevices reads the node state and chooses devices from it. Use it where
+// the decision is not going to be written back - Filter, for instance. A caller
+// that does mean to reserve what it chose must instead call
+// selectDevicesFromState on the state it is about to update, so that the choice
+// and the write cannot be separated by another scheduling cycle.
 func (ap *SpyrePlugin) SelectDevices(ctx context.Context, isPrivilegedPod bool, resourceName string,
 	numReqDevs int64, nodeName string) ([]string, *spyrev1alpha1.SpyreNodeState, error) {
 
@@ -82,20 +89,35 @@ func (ap *SpyrePlugin) SelectDevices(ctx context.Context, isPrivilegedPod bool, 
 		klog.Errorf("failed to get SpyreNodeState for node: %v", nodeState)
 		return nil, nil, err
 	}
+	// Reservations written by a component that predates ReservationEntry have to
+	// be brought into the current representation before anything reads them,
+	// otherwise their devices would look available.
+	nodeState.Status.NormalizeReservations()
+
 	for i, a := range nodeState.Status.AllocationList {
 		klog.Infof("SelectDevices: nodeState.Allocation[%d]: {DeviceList: %v, Pod: %s/%s}",
 			i, a.DeviceList, a.Pod.Namespace, a.Pod.Name)
 	}
 	klog.Infof("SelectDevices: nodeState.Reservation: %v", nodeState.Status.Reservations)
 
+	devs, err := selectDevicesFromState(nodeState, isPrivilegedPod, resourceName, numReqDevs)
+	return devs, nodeState, err
+}
+
+// selectDevicesFromState chooses devices for a request out of the node state it
+// is given, without reading or writing the API.
+func selectDevicesFromState(nodeState *spyrev1alpha1.SpyreNodeState, isPrivilegedPod bool,
+	resourceName string, numReqDevs int64) ([]string, error) {
+
 	if isSpecificDeviceRequest(resourceName) {
-		return selectSpecificDevice(nodeState, isPrivilegedPod, resourceName)
+		devs, _, err := selectSpecificDevice(nodeState, isPrivilegedPod, resourceName)
+		return devs, err
 	}
 
 	// tier1/2 request must be 1 or even number
 	if (strings.HasSuffix(resourceName, "_tier1") || strings.HasSuffix(resourceName, "_tier2")) &&
 		numReqDevs > 1 && numReqDevs%2 != 0 {
-		return nil, nil, fmt.Errorf("%s: requires even number devices", resourceName)
+		return nil, fmt.Errorf("%s: requires even number devices", resourceName)
 	}
 
 	// get device tree of the node because
@@ -103,12 +125,13 @@ func (ap *SpyrePlugin) SelectDevices(ctx context.Context, isPrivilegedPod bool, 
 
 	// handle non-tier requests can be done regardless of pcitopo error
 	if numReqDevs == 1 || !strings.Contains(resourceName, "_tier") {
-		return selectAnyDevices(resourceName, isPrivilegedPod, numReqDevs, nodeState, tree)
+		devs, _, err := selectAnyDevices(resourceName, isPrivilegedPod, numReqDevs, nodeState, tree)
+		return devs, err
 	}
 
 	// return at pcitopo error when request is topology-aware
 	if treeErr != nil {
-		return nil, nil,
+		return nil,
 			fmt.Errorf("unable to select %d %s device(s) due to pcitopo error: %w",
 				numReqDevs, resourceName, treeErr)
 	}
@@ -116,17 +139,13 @@ func (ap *SpyrePlugin) SelectDevices(ctx context.Context, isPrivilegedPod bool, 
 	// handle topology-aware requests with tree
 	switch {
 	case strings.HasSuffix(resourceName, "_tier0"):
-		devs, err := selectTier0Devices(resourceName, numReqDevs, tree)
-		return devs, nodeState, err
+		return selectTier0Devices(resourceName, numReqDevs, tree)
 	case strings.HasSuffix(resourceName, "_tier1"):
-		devs, err := selectTier1Devices(resourceName, numReqDevs, tree)
-		return devs, nodeState, err
+		return selectTier1Devices(resourceName, numReqDevs, tree)
 	case strings.HasSuffix(resourceName, "_tier2"):
-		devs, err := selectTier2Devices(resourceName, numReqDevs, tree)
-		return devs, nodeState, err
+		return selectTier2Devices(resourceName, numReqDevs, tree)
 	default:
-		err = fmt.Errorf("unexpected error for %d %s: %v", numReqDevs, resourceName, nodeState)
-		return nil, nodeState, err
+		return nil, fmt.Errorf("unexpected error for %d %s: %v", numReqDevs, resourceName, nodeState)
 	}
 }
 
@@ -396,13 +415,9 @@ func selectAnyVfDevices(resourceName string, isPrivilegedPod bool, numReqDevs in
 	nVf1 := nodeState.Spec.SpyreInterfaces[0].NumVfs
 
 	unavailableDevices := make([]string, 0, nPf*nVf1)
-	for _, a := range nodeState.Status.AllocationList {
-		unavailableDevices = append(unavailableDevices, a.DeviceList...)
-	}
+	unavailableDevices = append(unavailableDevices, nodeState.Status.AllocatedDevices()...)
 	if r, ok := nodeState.Status.Reservations[resourceName]; ok {
-		for _, ds := range r.DeviceSets {
-			unavailableDevices = append(unavailableDevices, ds...)
-		}
+		unavailableDevices = append(unavailableDevices, r.ReservedDevices()...)
 	}
 
 	selected := make([]string, 0, numReqDevs)
@@ -469,14 +484,39 @@ func isAvailable(nodeState *spyrev1alpha1.SpyreNodeState, d string) bool {
 			return false
 		}
 	}
-	for _, r := range nodeState.Status.Reservations {
-		for _, ds := range r.DeviceSets {
-			if slices.Contains(ds, d) {
-				return false
-			}
-		}
+	// Every reservation counts, whichever Pod holds it and whichever resource
+	// pool it lives in.
+	if slices.Contains(allReservedDevices(nodeState), d) {
+		return false
 	}
 	return true
+}
+
+// reservedDevices returns every device a reservation covers, as the union of its
+// entries and the deprecated device sets.
+//
+// The two agree on any reservation written by an up-to-date component, and on
+// any state that has been through NormalizeReservations. Taking the union rather
+// than trusting the entries alone means a device still counts as reserved when
+// neither is true - a state written by a component that only knows the deprecated
+// fields, or one that has not been normalized. Erring this way costs a scheduling
+// attempt; erring the other way hands one device to two Pods.
+func reservedDevices(r spyrev1alpha1.Reservation) []string {
+	devices := r.ReservedDevices()
+	for _, ds := range r.DeviceSets {
+		devices = append(devices, ds...)
+	}
+	return devices
+}
+
+// allReservedDevices returns every device reserved on the node, across every
+// resource pool. Devices may appear more than once.
+func allReservedDevices(nodeState *spyrev1alpha1.SpyreNodeState) []string {
+	devices := []string{}
+	for _, r := range nodeState.Status.Reservations {
+		devices = append(devices, reservedDevices(r)...)
+	}
+	return devices
 }
 
 // availableDevice returns PF/VF device ID or empty string.
@@ -581,116 +621,185 @@ func (ap *SpyrePlugin) getNumRemainingDevices(ctx context.Context, nodeState *sp
 	return count, nil
 }
 
-// cleanupOrphanReservation removes staled reservation entries. "staled" means:
+// reservationGracePeriod is how long a reservation is honoured after its Pod
+// stopped being visible in the API.
 //
-//  1. `podUnderScheduling` entries which do not exist in the cluster - this Pod became
-//     error and no longer exists.
-//  2. `podUnderScheduling` entry same as the to-be-scheduled Pod - this Pod is being
-//     re-created and therefore previous reservation must be removed.
-//
-// `deviceSets` entry that its size matches `.spec.containers[].resources.requests` or
-// `.spec.containers[].resources.requests` of each removed `podUnderScheduling` entry
-// is also removed. (e.g., a staled Pod requests 4 devices, then one of the `deviceSets`
-// entry which has 4 devices will also be removed)
+// Tearing a Pod down is not instantaneous: the Pod object can be gone while its
+// container still holds an open /dev/vfio device, and the device plugin has not
+// necessarily turned the reservation into an allocation yet. Releasing the
+// devices the first moment the Pod cannot be found is what lets a second Pod
+// onto a card the first one has not finished with, so the reservation is honoured
+// for a while longer. Override with SPYRE_RESERVATION_GRACE_PERIOD (a Go
+// duration, e.g. "45s").
+var reservationGracePeriod = envDuration("SPYRE_RESERVATION_GRACE_PERIOD", 30*time.Second)
+
+func envDuration(name string, fallback time.Duration) time.Duration {
+	v, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		klog.Errorf("ignoring invalid %s=%q, using %s: %v", name, v, fallback, err)
+		return fallback
+	}
+	return d
+}
+
+// podReference is how a Pod is recorded in SpyreNodeState. The UID is what makes
+// the record refer to this Pod rather than to whatever else may later carry the
+// same name.
+func podReference(p *corev1.Pod) spyrev1alpha1.Pod {
+	return spyrev1alpha1.Pod{Name: p.Name, Namespace: p.Namespace, UID: p.UID}
+}
+
+// cleanupOrphanReservation removes the reservations on a node that can no longer
+// belong to a live Pod, and returns the resulting node state.
 func (ap *SpyrePlugin) cleanupOrphanReservation(ctx context.Context, nodeName string, schedPod *corev1.Pod) (*spyrev1alpha1.SpyreNodeState, error) { //nolint:lll
+	return ap.spyreClient.MutateNodeStateStatus(ctx, nodeName,
+		func(nodeState *spyrev1alpha1.SpyreNodeState) error {
+			before := nodeState.Status.DeepCopy()
+			if err := ap.pruneStaleReservations(ctx, nodeState, schedPod); err != nil {
+				return err
+			}
+			if reflect.DeepEqual(before.Reservations, nodeState.Status.Reservations) {
+				// Nothing was stale. Writing the status back regardless would
+				// bump the resourceVersion for every Filter call on the node and
+				// make other scheduling cycles conflict for no reason.
+				return spyreclient.ErrNoStatusChange
+			}
+			return nil
+		})
+}
 
-	var nodeState *spyrev1alpha1.SpyreNodeState
+// pruneStaleReservations removes the reservations on nodeState that can no longer
+// belong to a live Pod. It mutates nodeState in place and does not write it back.
+//
+// A reservation is stale when:
+//
+//  1. it belongs to schedPod, the Pod being scheduled right now. Whatever it
+//     reserved in an earlier scheduling cycle is superseded by this one.
+//  2. its Pod is no longer in the API and the grace period has elapsed. This
+//     covers a Pod that failed, and a Pod that was replaced by a namesake: the
+//     namesake has a different UID, so the reservation is recognised as
+//     belonging to the generation that is gone.
+//
+// Everything else is kept. In particular a reservation whose Pod is alive is kept
+// no matter how its device count compares to anything: the reservation records
+// which devices are that Pod's, so there is nothing left to infer. The previous
+// implementation matched a Pod to a device set by comparing the number of devices
+// in the set with the Pod's resource request, which cannot distinguish two Pods
+// that each reserved one device - and so could release a live Pod's device and
+// hand it to a second Pod.
+func (ap *SpyrePlugin) pruneStaleReservations(ctx context.Context,
+	nodeState *spyrev1alpha1.SpyreNodeState, schedPod *corev1.Pod) error {
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	klog.Infof("cleaning-up orphan reservation")
+	now := metav1.Now()
+	live := &livePods{k8sClient: ap.k8sClient}
+	self := podReference(schedPod)
 
-		var err error
-		klog.Infof("getting SpyreNodeState for node: %s", nodeName)
-		nodeState, err = ap.spyreClient.GetSpyreNodeState(ctx, nodeName)
-		if err != nil {
-			klog.Errorf("failed to get NodeState: %s", err)
-			return err
-		}
-
-		klog.Infof("cleaning-up orphan reservation")
-		ns2PodList := make(map[string]*corev1.PodList)
-		for resName, r := range nodeState.Status.Reservations {
-			if len(r.PodsUnderScheduling) == 0 {
-				klog.Infof("cleaning-up DeviceSets: %v", r.DeviceSets)
-				nodeState.Status.Reservations[resName] = spyrev1alpha1.Reservation{}
+	for resName, r := range nodeState.Status.Reservations {
+		kept := make([]spyrev1alpha1.ReservationEntry, 0, len(r.Entries))
+		for _, e := range r.Entries {
+			keep, err := ap.keepReservation(ctx, live, e, self, now)
+			if err != nil {
+				return err
+			}
+			if keep {
+				kept = append(kept, e)
 				continue
 			}
-
-			newPusList := []spyrev1alpha1.Pod{}
-			devSetPreserveFlag := make([]bool, len(r.DeviceSets))
-			for _, pus := range r.PodsUnderScheduling {
-
-				// Don't preserve a Pod entry which name is same as
-				// the Pod to-be-scheduled because it is now being re-created.
-				if pus.Name == schedPod.Name && pus.Namespace == schedPod.Namespace {
-					klog.Infof("PodUnderScheduling %s/%s is removed because it is now being re-created",
-						pus.Namespace, pus.Name)
-					continue // don't add it to the preserve list (pList)
-				}
-
-				// get Pod list (once per namespace)
-				pList, exists := ns2PodList[pus.Namespace]
-				if !exists {
-					ns2PodList[pus.Namespace] = &corev1.PodList{}
-					opt := &client.ListOptions{Namespace: pus.Namespace}
-					ctx := context.Background()
-					err := ap.k8sClient.List(ctx, ns2PodList[pus.Namespace], opt)
-					if err != nil {
-						klog.Errorf("failed to get Pod list in namespace %s: %s", pus.Namespace, err.Error())
-						return err
-					}
-					pList = ns2PodList[pus.Namespace]
-				}
-
-				// preserve 1) Pod in podUnderScheduling only if it exists in a namespace
-				// and 2) deviceSet entry which has same number of devices to the Pod.
-				found := false
-				for _, p := range pList.Items {
-					if pus.Name == p.Name {
-						newPusList = append(newPusList, pus)
-						rName := corev1.ResourceName(spyreconst.ResourcePrefix + "/" + resName)
-						var q resource.Quantity
-						var exists bool
-						for _, c := range p.Spec.Containers {
-							q, exists = c.Resources.Requests[rName]
-							if !exists {
-								q, exists = c.Resources.Limits[rName]
-							}
-							if exists {
-								break
-							}
-						}
-						for i, hasAlreadyPreserved := range devSetPreserveFlag {
-							if (&q).CmpInt64(int64(len(r.DeviceSets[i]))) == 0 &&
-								!hasAlreadyPreserved {
-								devSetPreserveFlag[i] = true
-								break
-							}
-						}
-						found = true
-						break
-					}
-				}
-
-				if !found {
-					klog.Infof("PodUnderScheduling %s/%s no longer exists", pus.Namespace, pus.Name)
-				}
-			}
-			newDevSets := make([][]string, 0, len(r.DeviceSets))
-			for i := range r.DeviceSets {
-				if devSetPreserveFlag[i] {
-					newDevSets = append(newDevSets, r.DeviceSets[i])
-				}
-			}
-			r.DeviceSets = newDevSets
-			r.PodsUnderScheduling = newPusList
-			klog.Infof("Remove DeviceSets")
-			nodeState.Status.Reservations[resName] = r
+			klog.Infof("releasing stale reservation of %v held by %s/%s (uid: %s) in pool %s",
+				e.DeviceList, e.Pod.Namespace, e.Pod.Name, e.Pod.UID, resName)
 		}
-		nodeState, err = ap.spyreClient.UpdateStatus(ctx, nodeState, true)
-		return err
-	})
+		if len(kept) == len(r.Entries) {
+			continue
+		}
+		r.Entries = kept
+		r.SyncLegacy()
+		if r.IsEmpty() {
+			delete(nodeState.Status.Reservations, resName)
+			continue
+		}
+		nodeState.Status.Reservations[resName] = r
+	}
+	return nil
+}
 
-	return nodeState, err
+// keepReservation reports whether a single reservation entry survives the prune.
+func (ap *SpyrePlugin) keepReservation(ctx context.Context, live *livePods,
+	e spyrev1alpha1.ReservationEntry, schedPod spyrev1alpha1.Pod, now metav1.Time) (bool, error) {
+
+	// The Pod being scheduled is about to reserve what it needs in this cycle, so
+	// anything it reserved in an earlier one is stale.
+	if e.Pod.SameAs(schedPod) {
+		return false, nil
+	}
+
+	exists, err := live.contains(ctx, e.Pod)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return true, nil
+	}
+
+	// The owner is gone, but the devices may still be in use while it shuts down.
+	return !e.ReservedBefore(now, reservationGracePeriod), nil
+}
+
+// livePods answers "does this Pod still exist?", listing each namespace at most
+// once per prune.
+type livePods struct {
+	k8sClient   client.Client
+	byNamespace map[string]*corev1.PodList
+}
+
+// contains reports whether pod is still present in the API. A Pod that merely
+// reuses the recorded name is not a match: ARC-style runners recreate Pods under
+// a recycled name, and the reservation belongs to the generation that made it.
+func (l *livePods) contains(ctx context.Context, pod spyrev1alpha1.Pod) (bool, error) {
+	if pod.Name == "" || pod.Namespace == "" {
+		// A reservation adopted from the deprecated fields can have no owner
+		// recorded at all, so there is nothing to look up. It is held until the
+		// grace period releases it.
+		return false, nil
+	}
+	list, err := l.inNamespace(ctx, pod.Namespace)
+	if err != nil {
+		return false, err
+	}
+	for i := range list.Items {
+		p := &list.Items[i]
+		if p.Name != pod.Name {
+			continue
+		}
+		if pod.UID != "" && p.UID != pod.UID {
+			klog.Infof("Pod %s/%s exists but is a different generation (reserved uid: %s, live uid: %s)",
+				pod.Namespace, pod.Name, pod.UID, p.UID)
+			continue
+		}
+		return true, nil
+	}
+	klog.Infof("Pod %s/%s (uid: %s) no longer exists", pod.Namespace, pod.Name, pod.UID)
+	return false, nil
+}
+
+func (l *livePods) inNamespace(ctx context.Context, namespace string) (*corev1.PodList, error) {
+	if list, ok := l.byNamespace[namespace]; ok {
+		return list, nil
+	}
+	list := &corev1.PodList{}
+	if err := l.k8sClient.List(ctx, list, &client.ListOptions{Namespace: namespace}); err != nil {
+		klog.Errorf("failed to get Pod list in namespace %s: %s", namespace, err.Error())
+		return nil, err
+	}
+	if l.byNamespace == nil {
+		l.byNamespace = make(map[string]*corev1.PodList)
+	}
+	l.byNamespace[namespace] = list
+	return list, nil
 }
 
 // getNumRequestedDevices returns the number and the resource name of devices that

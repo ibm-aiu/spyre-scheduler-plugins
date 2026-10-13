@@ -17,6 +17,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -27,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/scheduler-plugins/pkg/spyre"
 )
@@ -249,6 +252,147 @@ var _ = Describe("Reserve", Ordered, func() {
 				err = spyre.ReserveDevices(ap, ctx, p2, "node1")
 				Expect(err).To(BeNil())
 
+				By("ensure the stale reservation was replaced rather than added to")
+				s, err = spyreClient.GetSpyreNodeState(ctx, "node1")
+				Expect(err).To(BeNil())
+				s.Status.NormalizeReservations()
+				r := s.Status.Reservations[spyreconst.PfResourceName]
+				Expect(r.Entries).Should(HaveLen(1))
+				Expect(r.Entries[0].Pod).Should(Equal(spyre.PodReference(p2)))
+				Expect(r.Entries[0].DeviceList).Should(HaveLen(8))
+			})
+
+			It("holds a same-named predecessor's reservation until the grace period passes", func() {
+				// ARC-style runners recreate Pods under a recycled name. A
+				// reservation belongs to the generation that made it, whose
+				// container may still hold /dev/vfio open, so the namesake has to be
+				// given a different device instead of inheriting the same one.
+				s, err := spyreClient.GetSpyreNodeState(ctx, nodeName)
+				Expect(err).To(BeNil())
+				// BeforeEach wrote only the deprecated fields, which is what a
+				// component that predates Entries produces. Normalizing is what
+				// every reader has to do first, and what stops the write below from
+				// dropping p1's reservation.
+				s.Status.NormalizeReservations()
+				predecessor := spyrev1alpha1.Pod{
+					Name: "runner", Namespace: appNs,
+					UID: k8stypes.UID("00000000-0000-0000-0000-0000000000ff"),
+				}
+				s.Status.ReserveDevices(spyreconst.PfResourceName, predecessor,
+					[]string{"0000:3d:00.0"}, metav1.Now())
+				_, err = spyreClient.UpdateStatus(ctx, s, true)
+				Expect(err).To(BeNil())
+
+				successor := buildPod("runner", appNs, spyreconst.PfResourceName, 1)
+				Expect(k8sClient.Create(ctx, successor)).To(Succeed())
+				Expect(successor.UID).ShouldNot(BeEmpty())
+				Expect(successor.UID).ShouldNot(Equal(predecessor.UID))
+
+				restore := spyre.ExportSetReservationGracePeriod(time.Hour)
+				defer spyre.ExportSetReservationGracePeriod(restore)
+				Expect(spyre.ReserveDevices(ap, ctx, successor, nodeName)).To(Succeed())
+
+				s, err = spyreClient.GetSpyreNodeState(ctx, nodeName)
+				Expect(err).To(BeNil())
+				s.Status.NormalizeReservations()
+				r := s.Status.Reservations[spyreconst.PfResourceName]
+				// p1 from BeforeEach, the predecessor, and the successor.
+				Expect(r.Entries).Should(HaveLen(3))
+				kept, found := r.EntryForPod(predecessor)
+				Expect(found).Should(BeTrue())
+				Expect(kept.DeviceList).Should(ConsistOf("0000:3d:00.0"))
+				mine, found := r.EntryForPod(spyre.PodReference(successor))
+				Expect(found).Should(BeTrue())
+				Expect(mine.DeviceList).ShouldNot(ContainElement("0000:3d:00.0"))
+			})
+
+			It("releases the reservation when the scheduling cycle is abandoned", func() {
+				// The framework calls Unreserve both when Reserve failed and when a
+				// later extension point rejected the Pod. Without it the devices
+				// stay reserved until some later cycle happens to prune them.
+				before, err := spyreClient.GetSpyreNodeState(ctx, nodeName)
+				Expect(err).To(BeNil())
+				before.Status.NormalizeReservations()
+				remaining, err := spyre.GetNumRemainingDevices(ap, ctx, before, false, spyreconst.PfResourceName)
+				Expect(err).To(BeNil())
+
+				p := buildPod("pu", appNs, spyreconst.PfResourceName, 2)
+				Expect(k8sClient.Create(ctx, p)).To(Succeed())
+				Expect(spyre.ReserveDevices(ap, ctx, p, nodeName)).To(Succeed())
+
+				s, err := spyreClient.GetSpyreNodeState(ctx, nodeName)
+				Expect(err).To(BeNil())
+				s.Status.NormalizeReservations()
+				mine, found := s.Status.Reservations[spyreconst.PfResourceName].EntryForPod(spyre.PodReference(p))
+				Expect(found).Should(BeTrue())
+				Expect(mine.DeviceList).Should(HaveLen(2))
+				left, err := spyre.GetNumRemainingDevices(ap, ctx, s, false, spyreconst.PfResourceName)
+				Expect(err).To(BeNil())
+				Expect(left).Should(Equal(remaining - 2))
+
+				By("unreserve hands the devices back")
+				Expect(spyre.UnreserveDevices(ap, ctx, p, nodeName)).To(Succeed())
+				s, err = spyreClient.GetSpyreNodeState(ctx, nodeName)
+				Expect(err).To(BeNil())
+				s.Status.NormalizeReservations()
+				_, found = s.Status.Reservations[spyreconst.PfResourceName].EntryForPod(spyre.PodReference(p))
+				Expect(found).Should(BeFalse())
+				left, err = spyre.GetNumRemainingDevices(ap, ctx, s, false, spyreconst.PfResourceName)
+				Expect(err).To(BeNil())
+				Expect(left).Should(Equal(remaining))
+
+				By("a second unreserve is a no-op rather than an error")
+				Expect(spyre.UnreserveDevices(ap, ctx, p, nodeName)).To(Succeed())
+			})
+
+			It("does not hand the same device to two Pods scheduled at once", func() {
+				// envtest is a real apiserver, so these cycles really do collide on
+				// the SpyreNodeState resourceVersion. Each one has to re-read and
+				// choose again; the implementation this replaces chose once and then
+				// retried the write with the resourceVersion it had read before
+				// choosing, so every retry was doomed once it had lost the race.
+				//
+				// The suite runs the specs of an Ordered container in one process,
+				// so these goroutines are the only writers.
+				const concurrent = 4
+				pods := make([]*corev1.Pod, 0, concurrent)
+				for i := 0; i < concurrent; i++ {
+					p := buildPod(fmt.Sprintf("racer%d", i), appNs, spyreconst.PfResourceName, 1)
+					Expect(k8sClient.Create(ctx, p)).To(Succeed())
+					pods = append(pods, p)
+				}
+
+				errs := make([]error, concurrent)
+				var wg sync.WaitGroup
+				for i := range pods {
+					wg.Add(1)
+					go func(i int) {
+						defer wg.Done()
+						errs[i] = spyre.ReserveDevices(ap, ctx, pods[i], nodeName)
+					}(i)
+				}
+				wg.Wait()
+				for i, e := range errs {
+					Expect(e).To(BeNil(), "racer%d failed to reserve", i)
+				}
+
+				s, err := spyreClient.GetSpyreNodeState(ctx, nodeName)
+				Expect(err).To(BeNil())
+				s.Status.NormalizeReservations()
+
+				By("no device is both allocated and reserved, or reserved twice")
+				all := s.Status.AllocatedDevices()
+				all = append(all, s.Status.ReservedDevices()...)
+				slices.Sort(all)
+				Expect(slices.Compact(slices.Clone(all))).Should(HaveLen(len(all)), "double booking: %v", all)
+
+				By("every racer got its own device")
+				r := s.Status.Reservations[spyreconst.PfResourceName]
+				for _, p := range pods {
+					e, found := r.EntryForPod(spyre.PodReference(p))
+					Expect(found).Should(BeTrue(), "no reservation for %s", p.Name)
+					Expect(e.DeviceList).Should(HaveLen(1))
+				}
 			})
 		})
 
