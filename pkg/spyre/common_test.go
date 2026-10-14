@@ -45,7 +45,7 @@ var _ = Describe("Common functions", func() {
 		Expect(err).NotTo(HaveOccurred())
 		ap = &spyre.SpyrePlugin{}
 		ap.ExportSetSpyreClient(spyreClient)
-		ap.ExportSetK8sClient(k8sClient)
+		ap.ExportSetPodLister(clientPodLister{k8sClient})
 	})
 
 	Context("SpyreNodeState handling", func() {
