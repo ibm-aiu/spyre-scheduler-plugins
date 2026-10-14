@@ -63,3 +63,6 @@ func ExportNewNodeStateCache() *assumecache.AssumeCache {
 func (ap *SpyrePlugin) ExportSetPodLister(pl corelisters.PodLister) {
 	ap.podLister = pl
 }
+
+var IsSchedulableAfterNodeStateChange = isSchedulableAfterNodeStateChange
+var IsSchedulableAfterPodDeletion = isSchedulableAfterPodDeletion

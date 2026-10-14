@@ -9,6 +9,7 @@ package spyre
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 
@@ -34,7 +35,8 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 	klog.Info("checking number of requested spyre PFs/VFs")
 	m, err := getNumRequestedDevices(pod)
 	if err != nil {
-		return framework.AsStatus(err)
+		// The request itself is malformed; retrying cannot help.
+		return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
 	}
 
 	if len(m) == 0 {
@@ -53,6 +55,11 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 	// they do not count against the node; Reserve drops them for real when it
 	// writes the node state back, before it reserves anything on the node.
 	nodeState, err := ap.nodeStates.get(ctx, nodeName)
+	if errors.Is(err, errNodeStateNotFound) {
+		// Only this node is out of the question. An error status would abort
+		// the scheduling of the Pod on every node.
+		return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
+	}
 	if err != nil {
 		return framework.AsStatus(err)
 	}
@@ -72,7 +79,8 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 
 	// user Pod
 	if len(m) > 1 {
-		return framework.AsStatus(fmt.Errorf("User Pod cannot request both PF and VF devices."))
+		return framework.NewStatus(framework.UnschedulableAndUnresolvable,
+			"User Pod cannot request both PF and VF devices.")
 	}
 
 	var numRequested int64
@@ -90,9 +98,12 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 	if !isCardMgmtRunner { // user Pod
 
 		// health-based filtering
+		// An error status would send the Pod round the backoff queue for as
+		// long as the policy stays unready; rejecting it instead parks it until
+		// the policy changes.
 		if spyrepol.Status.State != spyrev1alpha1.Ready {
-			return framework.AsStatus(
-				fmt.Errorf("SpyreClusterPolicy is not ready: %s", spyrepol.Status.State))
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable,
+				fmt.Sprintf("SpyreClusterPolicy is not ready: %s", spyrepol.Status.State))
 		}
 
 		// cardmgmt-based filtering
