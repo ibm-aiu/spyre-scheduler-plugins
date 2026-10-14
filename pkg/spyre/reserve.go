@@ -59,7 +59,7 @@ func (ap *SpyrePlugin) reserveDevices(ctx context.Context, p *corev1.Pod, nodeNa
 	klog.Infof("Spyre requests: %d (%v)", nReq, rName)
 
 	klog.Info("getting SpyreClusterPolicy")
-	spyrepol, err := ap.spyreClient.GetSpyreClusterPolicy(ctx, "spyreclusterpolicy")
+	spyrepol, err := ap.policies.get(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get AiuClusterPolicy: %w", err)
 	}

@@ -43,14 +43,21 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 	}
 
 	klog.Info("check state in SpyreClusterPolicy")
-	spyrepol, err := ap.spyreClient.GetSpyreClusterPolicy(ctx, "spyreclusterpolicy")
+	spyrepol, err := ap.policies.get(ctx)
 	if err != nil {
 		return framework.AsStatus(
 			fmt.Errorf("failed to get SpyreClusterPolicy: %w", err))
 	}
 
-	nodeState, err := ap.cleanupOrphanReservation(ctx, nodeName, pod)
+	// Filter only reads. Stale reservations are dropped from this copy so that
+	// they do not count against the node; Reserve drops them for real when it
+	// writes the node state back, before it reserves anything on the node.
+	nodeState, err := ap.nodeStates.get(ctx, nodeName)
 	if err != nil {
+		return framework.AsStatus(err)
+	}
+	nodeState.Status.NormalizeReservations()
+	if err := ap.pruneStaleReservations(nodeState, pod); err != nil {
 		return framework.AsStatus(err)
 	}
 
@@ -101,7 +108,7 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 			pod.Namespace, pod.Name, nodeName, msg)
 	}
 
-	if _, _, err = ap.SelectDevices(ctx, isCardMgmtRunner, resourceName, numRequested, nodeName); err != nil {
+	if _, err = selectDevicesFromState(nodeState, isCardMgmtRunner, resourceName, numRequested); err != nil {
 		return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
 	}
 	return framework.NewStatus(framework.Success)
