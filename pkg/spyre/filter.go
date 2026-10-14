@@ -9,6 +9,7 @@ package spyre
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 
@@ -25,32 +26,48 @@ func (ap *SpyrePlugin) Filter(
 	ctx context.Context, cycleState framework.CycleState,
 	pod *corev1.Pod, nodeInfo framework.NodeInfo) *framework.Status {
 
-	klog.InfoS("starting filter process", "pod", pod, "node", nodeInfo.Node().Name)
+	// Filter runs once per node for every Pod, so everything it logs is
+	// multiplied by the number of nodes: keep it out of the default verbosity,
+	// and log the Pod by reference rather than dumping the whole object.
+	klog.V(4).InfoS("starting filter process", "pod", klog.KObj(pod), "node", nodeInfo.Node().Name)
 	return ap.filter(ctx, pod, nodeInfo.Node().Name)
 }
 
 func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName string) *framework.Status {
 
-	klog.Info("checking number of requested spyre PFs/VFs")
+	klog.V(5).Info("checking number of requested spyre PFs/VFs")
 	m, err := getNumRequestedDevices(pod)
 	if err != nil {
-		return framework.AsStatus(err)
+		// The request itself is malformed; retrying cannot help.
+		return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
 	}
 
 	if len(m) == 0 {
-		klog.Info("skip filter operation because Pod does not request neither PF nor VF devices.")
+		klog.V(5).Info("skip filter operation because Pod does not request neither PF nor VF devices.")
 		return framework.NewStatus(framework.Success)
 	}
 
-	klog.Info("check state in SpyreClusterPolicy")
-	spyrepol, err := ap.spyreClient.GetSpyreClusterPolicy(ctx, "spyreclusterpolicy")
+	klog.V(5).Info("check state in SpyreClusterPolicy")
+	spyrepol, err := ap.policies.get(ctx)
 	if err != nil {
 		return framework.AsStatus(
 			fmt.Errorf("failed to get SpyreClusterPolicy: %w", err))
 	}
 
-	nodeState, err := ap.cleanupOrphanReservation(ctx, nodeName, pod)
+	// Filter only reads. Stale reservations are dropped from this copy so that
+	// they do not count against the node; Reserve drops them for real when it
+	// writes the node state back, before it reserves anything on the node.
+	nodeState, err := ap.nodeStates.get(ctx, nodeName)
+	if errors.Is(err, errNodeStateNotFound) {
+		// Only this node is out of the question. An error status would abort
+		// the scheduling of the Pod on every node.
+		return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
+	}
 	if err != nil {
+		return framework.AsStatus(err)
+	}
+	nodeState.Status.NormalizeReservations()
+	if err := ap.pruneStaleReservations(nodeState, pod); err != nil {
 		return framework.AsStatus(err)
 	}
 
@@ -65,7 +82,8 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 
 	// user Pod
 	if len(m) > 1 {
-		return framework.AsStatus(fmt.Errorf("User Pod cannot request both PF and VF devices."))
+		return framework.NewStatus(framework.UnschedulableAndUnresolvable,
+			"User Pod cannot request both PF and VF devices.")
 	}
 
 	var numRequested int64
@@ -76,16 +94,19 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 		numRequested = int64(v)
 	}
 
-	klog.Infof("Pod requests %d %s.", numRequested, resourceName)
+	klog.V(5).Infof("Pod requests %d %s.", numRequested, resourceName)
 
 	isCardMgmtRunner := isCardManagementRunnerPod(pod, spyrepol.Status.Namespace)
 
 	if !isCardMgmtRunner { // user Pod
 
 		// health-based filtering
+		// An error status would send the Pod round the backoff queue for as
+		// long as the policy stays unready; rejecting it instead parks it until
+		// the policy changes.
 		if spyrepol.Status.State != spyrev1alpha1.Ready {
-			return framework.AsStatus(
-				fmt.Errorf("SpyreClusterPolicy is not ready: %s", spyrepol.Status.State))
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable,
+				fmt.Sprintf("SpyreClusterPolicy is not ready: %s", spyrepol.Status.State))
 		}
 
 		// cardmgmt-based filtering
@@ -97,11 +118,11 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 					pod.Namespace, pod.Name, nodeName, msg))
 		}
 
-		klog.Infof("user Pod %s/%s is eligible to acquire device on node %s: %s",
+		klog.V(5).Infof("user Pod %s/%s is eligible to acquire device on node %s: %s",
 			pod.Namespace, pod.Name, nodeName, msg)
 	}
 
-	if _, _, err = ap.SelectDevices(ctx, isCardMgmtRunner, resourceName, numRequested, nodeName); err != nil {
+	if _, err = selectDevicesFromState(nodeState, isCardMgmtRunner, resourceName, numRequested); err != nil {
 		return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
 	}
 	return framework.NewStatus(framework.Success)

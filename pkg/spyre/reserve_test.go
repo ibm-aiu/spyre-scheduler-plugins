@@ -53,7 +53,7 @@ var _ = Describe("Reserve", Ordered, func() {
 		Expect(spyreClient).NotTo((BeNil()))
 		ap = &spyre.SpyrePlugin{}
 		ap.ExportSetSpyreClient(spyreClient)
-		ap.ExportSetK8sClient(k8sClient)
+		ap.ExportSetPodLister(clientPodLister{k8sClient})
 	})
 
 	Context("reservation", func() {

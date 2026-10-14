@@ -41,7 +41,7 @@ var _ = Describe("Filter Plugin", func() {
 
 		ap = &spyre.SpyrePlugin{}
 		ap.ExportSetSpyreClient(spyreClient)
-		ap.ExportSetK8sClient(k8sClient)
+		ap.ExportSetPodLister(clientPodLister{k8sClient})
 
 	})
 
