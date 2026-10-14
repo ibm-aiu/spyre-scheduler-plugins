@@ -26,13 +26,16 @@ func (ap *SpyrePlugin) Filter(
 	ctx context.Context, cycleState framework.CycleState,
 	pod *corev1.Pod, nodeInfo framework.NodeInfo) *framework.Status {
 
-	klog.InfoS("starting filter process", "pod", pod, "node", nodeInfo.Node().Name)
+	// Filter runs once per node for every Pod, so everything it logs is
+	// multiplied by the number of nodes: keep it out of the default verbosity,
+	// and log the Pod by reference rather than dumping the whole object.
+	klog.V(4).InfoS("starting filter process", "pod", klog.KObj(pod), "node", nodeInfo.Node().Name)
 	return ap.filter(ctx, pod, nodeInfo.Node().Name)
 }
 
 func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName string) *framework.Status {
 
-	klog.Info("checking number of requested spyre PFs/VFs")
+	klog.V(5).Info("checking number of requested spyre PFs/VFs")
 	m, err := getNumRequestedDevices(pod)
 	if err != nil {
 		// The request itself is malformed; retrying cannot help.
@@ -40,11 +43,11 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 	}
 
 	if len(m) == 0 {
-		klog.Info("skip filter operation because Pod does not request neither PF nor VF devices.")
+		klog.V(5).Info("skip filter operation because Pod does not request neither PF nor VF devices.")
 		return framework.NewStatus(framework.Success)
 	}
 
-	klog.Info("check state in SpyreClusterPolicy")
+	klog.V(5).Info("check state in SpyreClusterPolicy")
 	spyrepol, err := ap.policies.get(ctx)
 	if err != nil {
 		return framework.AsStatus(
@@ -91,7 +94,7 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 		numRequested = int64(v)
 	}
 
-	klog.Infof("Pod requests %d %s.", numRequested, resourceName)
+	klog.V(5).Infof("Pod requests %d %s.", numRequested, resourceName)
 
 	isCardMgmtRunner := isCardManagementRunnerPod(pod, spyrepol.Status.Namespace)
 
@@ -115,7 +118,7 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 					pod.Namespace, pod.Name, nodeName, msg))
 		}
 
-		klog.Infof("user Pod %s/%s is eligible to acquire device on node %s: %s",
+		klog.V(5).Infof("user Pod %s/%s is eligible to acquire device on node %s: %s",
 			pod.Namespace, pod.Name, nodeName, msg)
 	}
 

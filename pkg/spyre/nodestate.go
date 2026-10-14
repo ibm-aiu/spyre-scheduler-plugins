@@ -177,7 +177,7 @@ func (s *nodeStateStore) mutateStatus(ctx context.Context, nodeName string,
 			// the device plugin touched the node state, or the cache was behind;
 			// the retry re-reads from the API and lets mutate recompute.
 			if k8serr.IsConflict(err) {
-				klog.V(4).Infof("SpyreNodeState status update conflicted for node %s, retrying: %v", nodeName, err)
+				klog.Infof("SpyreNodeState status update conflicted for node %s, retrying: %v", nodeName, err)
 			}
 			return err
 		}
