@@ -18,6 +18,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/util/assumecache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/scheduler-plugins/pkg/spyre"
@@ -121,6 +122,27 @@ var _ = Describe("SpyreNodeState cache", Ordered, func() {
 		Expect(after.ResourceVersion).Should(Equal(before.ResourceVersion))
 		_, found := after.Status.Reservations[spyreconst.PfResourceName].EntryForPod(spyre.PodReference(holder))
 		Expect(found).Should(BeTrue())
+	})
+
+	It("rejects only the node when the node has no state", func() {
+		// An error status would abort the scheduling of the Pod on every node.
+		cacheNodeState(nil)
+		status := spyre.ExportFilter(ap, ctx, holder, "node-without-state")
+		Expect(status.Code()).Should(Equal(fwk.UnschedulableAndUnresolvable), status.Message())
+	})
+
+	It("rejects user Pods while the cluster policy is not ready", func() {
+		cacheNodeState(nil)
+		pol, err := spyreClient.GetSpyreClusterPolicy(ctx, spyrepolName)
+		Expect(err).To(BeNil())
+		pol.Status.State = spyrev1alpha1.NotReady
+		_, err = spyreClient.UpdateSpyreClusterPolicyStatus(ctx, pol, true)
+		Expect(err).To(BeNil())
+
+		// The Pod waits for the policy to change rather than cycling through
+		// the backoff queue.
+		status := spyre.ExportFilter(ap, ctx, holder, nodeName)
+		Expect(status.Code()).Should(Equal(fwk.UnschedulableAndUnresolvable), status.Message())
 	})
 
 	It("does not hand out a device the cache does not know is taken", func() {
