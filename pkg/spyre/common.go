@@ -140,10 +140,10 @@ func (ap *SpyrePlugin) SelectDevices(ctx context.Context, isPrivilegedPod bool, 
 	nodeState.Status.NormalizeReservations()
 
 	for i, a := range nodeState.Status.AllocationList {
-		klog.Infof("SelectDevices: nodeState.Allocation[%d]: {DeviceList: %v, Pod: %s/%s}",
+		klog.V(5).Infof("SelectDevices: nodeState.Allocation[%d]: {DeviceList: %v, Pod: %s/%s}",
 			i, a.DeviceList, a.Pod.Namespace, a.Pod.Name)
 	}
-	klog.Infof("SelectDevices: nodeState.Reservation: %v", nodeState.Status.Reservations)
+	klog.V(5).Infof("SelectDevices: nodeState.Reservation: %v", nodeState.Status.Reservations)
 
 	devs, err := selectDevicesFromState(nodeState, isPrivilegedPod, resourceName, numReqDevs)
 	return devs, nodeState, err
@@ -662,7 +662,7 @@ func (ap *SpyrePlugin) getNumRemainingDevices(ctx context.Context, nodeState *sp
 		}
 	}
 
-	klog.Infof("getNumRemainingDevices: using regular path, count=%d, resourceName=%s", count, resourceName)
+	klog.V(4).Infof("getNumRemainingDevices: using regular path, count=%d, resourceName=%s", count, resourceName)
 	return count, nil
 }
 
@@ -720,7 +720,9 @@ func podReference(p *corev1.Pod) spyrev1alpha1.Pod {
 func (ap *SpyrePlugin) pruneStaleReservations(
 	nodeState *spyrev1alpha1.SpyreNodeState, schedPod *corev1.Pod) error {
 
-	klog.Infof("cleaning-up orphan reservation")
+	// Filter prunes a copy of the state of every node it looks at, so these
+	// messages are per node and per Pod; Reserve logs what it actually writes.
+	klog.V(5).Infof("cleaning-up orphan reservation")
 	now := metav1.Now()
 	self := podReference(schedPod)
 
@@ -735,7 +737,7 @@ func (ap *SpyrePlugin) pruneStaleReservations(
 				kept = append(kept, e)
 				continue
 			}
-			klog.Infof("releasing stale reservation of %v held by %s/%s (uid: %s) in pool %s",
+			klog.V(4).Infof("releasing stale reservation of %v held by %s/%s (uid: %s) in pool %s",
 				e.DeviceList, e.Pod.Namespace, e.Pod.Name, e.Pod.UID, resName)
 		}
 		if len(kept) == len(r.Entries) {
@@ -791,7 +793,7 @@ func (ap *SpyrePlugin) podExists(pod spyrev1alpha1.Pod) (bool, error) {
 	}
 	p, err := ap.podLister.Pods(pod.Namespace).Get(pod.Name)
 	if apierrors.IsNotFound(err) {
-		klog.Infof("Pod %s/%s (uid: %s) no longer exists", pod.Namespace, pod.Name, pod.UID)
+		klog.V(4).Infof("Pod %s/%s (uid: %s) no longer exists", pod.Namespace, pod.Name, pod.UID)
 		return false, nil
 	}
 	if err != nil {
@@ -799,7 +801,7 @@ func (ap *SpyrePlugin) podExists(pod spyrev1alpha1.Pod) (bool, error) {
 		return false, err
 	}
 	if pod.UID != "" && p.UID != pod.UID {
-		klog.Infof("Pod %s/%s exists but is a different generation (reserved uid: %s, live uid: %s)",
+		klog.V(4).Infof("Pod %s/%s exists but is a different generation (reserved uid: %s, live uid: %s)",
 			pod.Namespace, pod.Name, pod.UID, p.UID)
 		return false, nil
 	}
