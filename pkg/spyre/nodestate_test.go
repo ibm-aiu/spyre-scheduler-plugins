@@ -108,6 +108,21 @@ var _ = Describe("SpyreNodeState cache", Ordered, func() {
 		Expect(err).To(HaveOccurred())
 	})
 
+	It("leaves the node state alone in Filter", func() {
+		// The holder is being scheduled again, so its earlier reservation is
+		// stale. Filter must judge the node without it, but dropping it for
+		// real is Reserve's job: a write per node per Pod is what made every
+		// scheduling cycle collide with the others.
+		cacheNodeState(nil)
+		before := apiNodeState()
+		status := spyre.ExportFilter(ap, ctx, holder, nodeName)
+		Expect(status.IsSuccess()).Should(BeTrue(), status.Message())
+		after := apiNodeState()
+		Expect(after.ResourceVersion).Should(Equal(before.ResourceVersion))
+		_, found := after.Status.Reservations[spyreconst.PfResourceName].EntryForPod(spyre.PodReference(holder))
+		Expect(found).Should(BeTrue())
+	})
+
 	It("does not hand out a device the cache does not know is taken", func() {
 		// The cache holds the state from before another Pod reserved seven of
 		// the eight free devices, so it offers devices that are already gone.

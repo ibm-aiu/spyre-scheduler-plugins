@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -40,6 +39,8 @@ type SpyrePlugin struct {
 	spyreClient *spyreclient.SpyreClient
 	// nodeStates serves SpyreNodeStates from an informer and writes them back.
 	nodeStates *nodeStateStore
+	// policies serves the SpyreClusterPolicy from an informer.
+	policies *clusterPolicyStore
 	// podLister answers whether the Pod holding a reservation still exists. It
 	// reads the scheduler's own Pod informer, so the answer costs no API request.
 	podLister corelisters.PodLister
@@ -74,40 +75,50 @@ func New(ctx context.Context, arg runtime.Object, h framework.Handle) (framework
 	if err != nil {
 		return nil, fmt.Errorf("failed to create spyreClient: %w", err)
 	}
-	klog.Info("starting SpyreNodeState informer")
-	nodeStateInformer, err := startNodeStateInformer(ctx, cfg)
+	klog.Info("starting informers for SpyreNodeState and SpyreClusterPolicy")
+	informers, nodeStateInformer, policyInformer, err := startInformers(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &SpyrePlugin{
 		spyreClient: spyreClient,
 		nodeStates:  newNodeStateStore(klog.FromContext(ctx), spyreClient, nodeStateInformer),
-		podLister:   h.SharedInformerFactory().Core().V1().Pods().Lister(),
+		policies: &clusterPolicyStore{
+			spyreClient: spyreClient,
+			cache:       informers,
+			synced:      policyInformer.HasSynced,
+		},
+		podLister: h.SharedInformerFactory().Core().V1().Pods().Lister(),
 	}, nil
 }
 
-// startNodeStateInformer starts watching SpyreNodeStates for as long as ctx
-// lives. It does not wait for the initial list: until that arrives, reads go to
-// the API.
-func startNodeStateInformer(ctx context.Context, cfg *rest.Config) (crcache.Informer, error) {
+// startInformers starts watching SpyreNodeStates and SpyreClusterPolicies for as
+// long as ctx lives, and returns the cache together with the informer of each.
+// It does not wait for the initial lists: until they arrive, reads go to the
+// API.
+func startInformers(ctx context.Context, cfg *rest.Config) (crcache.Cache, crcache.Informer, crcache.Informer, error) {
 	scheme := runtime.NewScheme()
 	if err := spyrev1alpha1.AddToScheme(scheme); err != nil {
-		return nil, fmt.Errorf("failed to add spyre scheme: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to add spyre scheme: %w", err)
 	}
 	informers, err := crcache.New(cfg, crcache.Options{Scheme: scheme})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create SpyreNodeState cache: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create cache for spyre resources: %w", err)
 	}
-	informer, err := informers.GetInformer(ctx, &spyrev1alpha1.SpyreNodeState{}, crcache.BlockUntilSynced(false))
+	nodeStateInformer, err := informers.GetInformer(ctx, &spyrev1alpha1.SpyreNodeState{}, crcache.BlockUntilSynced(false))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create SpyreNodeState informer: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create SpyreNodeState informer: %w", err)
+	}
+	policyInformer, err := informers.GetInformer(ctx, &spyrev1alpha1.SpyreClusterPolicy{}, crcache.BlockUntilSynced(false))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create SpyreClusterPolicy informer: %w", err)
 	}
 	go func() {
 		if err := informers.Start(ctx); err != nil {
-			klog.ErrorS(err, "SpyreNodeState informer stopped")
+			klog.ErrorS(err, "informers for spyre resources stopped")
 		}
 	}()
-	return informer, nil
+	return informers, nodeStateInformer, policyInformer, nil
 }
 
 // SelectDevices reads the node state and chooses devices from it. Use it where
@@ -685,25 +696,6 @@ func envDuration(name string, fallback time.Duration) time.Duration {
 // same name.
 func podReference(p *corev1.Pod) spyrev1alpha1.Pod {
 	return spyrev1alpha1.Pod{Name: p.Name, Namespace: p.Namespace, UID: p.UID}
-}
-
-// cleanupOrphanReservation removes the reservations on a node that can no longer
-// belong to a live Pod, and returns the resulting node state.
-func (ap *SpyrePlugin) cleanupOrphanReservation(ctx context.Context, nodeName string, schedPod *corev1.Pod) (*spyrev1alpha1.SpyreNodeState, error) { //nolint:lll
-	return ap.nodeStates.mutateStatus(ctx, nodeName,
-		func(nodeState *spyrev1alpha1.SpyreNodeState) error {
-			before := nodeState.Status.DeepCopy()
-			if err := ap.pruneStaleReservations(nodeState, schedPod); err != nil {
-				return err
-			}
-			if reflect.DeepEqual(before.Reservations, nodeState.Status.Reservations) {
-				// Nothing was stale. Writing the status back regardless would
-				// bump the resourceVersion for every Filter call on the node and
-				// make other scheduling cycles conflict for no reason.
-				return spyreclient.ErrNoStatusChange
-			}
-			return nil
-		})
 }
 
 // pruneStaleReservations removes the reservations on nodeState that can no longer
