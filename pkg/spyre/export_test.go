@@ -11,7 +11,7 @@ import (
 	"time"
 
 	spyreclient "github.com/ibm-aiu/spyre-operator/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	corelisters "k8s.io/client-go/listers/core/v1"
 )
 
 var IsAvailable = isAvailable
@@ -42,6 +42,6 @@ var HasSSADevice = hasSSADevice
 func (ap *SpyrePlugin) ExportSetSpyreClient(ac *spyreclient.SpyreClient) {
 	ap.spyreClient = ac
 }
-func (ap *SpyrePlugin) ExportSetK8sClient(kc client.Client) {
-	ap.k8sClient = kc
+func (ap *SpyrePlugin) ExportSetPodLister(pl corelisters.PodLister) {
+	ap.podLister = pl
 }

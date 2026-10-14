@@ -26,17 +26,20 @@ import (
 
 	"golang.org/x/exp/maps"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type SpyrePlugin struct {
 	spyreClient *spyreclient.SpyreClient
-	k8sClient   client.Client
+	// podLister answers whether the Pod holding a reservation still exists. It
+	// reads the scheduler's own Pod informer, so the answer costs no API request.
+	podLister corelisters.PodLister
 }
 
 // following lines tell Go compiler that struct SpyrePlugin implements
@@ -68,12 +71,10 @@ func New(ctx context.Context, arg runtime.Object, h framework.Handle) (framework
 	if err != nil {
 		return nil, fmt.Errorf("failed to create spyreClient: %w", err)
 	}
-	klog.Info("creating k8sClient")
-	k8sClient, err := client.New(cfg, client.Options{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to instantiate k8sClient: %w", err)
-	}
-	return &SpyrePlugin{spyreClient: spyreClient, k8sClient: k8sClient}, nil
+	return &SpyrePlugin{
+		spyreClient: spyreClient,
+		podLister:   h.SharedInformerFactory().Core().V1().Pods().Lister(),
+	}, nil
 }
 
 // SelectDevices reads the node state and chooses devices from it. Use it where
@@ -659,7 +660,7 @@ func (ap *SpyrePlugin) cleanupOrphanReservation(ctx context.Context, nodeName st
 	return ap.spyreClient.MutateNodeStateStatus(ctx, nodeName,
 		func(nodeState *spyrev1alpha1.SpyreNodeState) error {
 			before := nodeState.Status.DeepCopy()
-			if err := ap.pruneStaleReservations(ctx, nodeState, schedPod); err != nil {
+			if err := ap.pruneStaleReservations(nodeState, schedPod); err != nil {
 				return err
 			}
 			if reflect.DeepEqual(before.Reservations, nodeState.Status.Reservations) {
@@ -691,18 +692,17 @@ func (ap *SpyrePlugin) cleanupOrphanReservation(ctx context.Context, nodeName st
 // in the set with the Pod's resource request, which cannot distinguish two Pods
 // that each reserved one device - and so could release a live Pod's device and
 // hand it to a second Pod.
-func (ap *SpyrePlugin) pruneStaleReservations(ctx context.Context,
+func (ap *SpyrePlugin) pruneStaleReservations(
 	nodeState *spyrev1alpha1.SpyreNodeState, schedPod *corev1.Pod) error {
 
 	klog.Infof("cleaning-up orphan reservation")
 	now := metav1.Now()
-	live := &livePods{k8sClient: ap.k8sClient}
 	self := podReference(schedPod)
 
 	for resName, r := range nodeState.Status.Reservations {
 		kept := make([]spyrev1alpha1.ReservationEntry, 0, len(r.Entries))
 		for _, e := range r.Entries {
-			keep, err := ap.keepReservation(ctx, live, e, self, now)
+			keep, err := ap.keepReservation(e, self, now)
 			if err != nil {
 				return err
 			}
@@ -728,7 +728,7 @@ func (ap *SpyrePlugin) pruneStaleReservations(ctx context.Context,
 }
 
 // keepReservation reports whether a single reservation entry survives the prune.
-func (ap *SpyrePlugin) keepReservation(ctx context.Context, live *livePods,
+func (ap *SpyrePlugin) keepReservation(
 	e spyrev1alpha1.ReservationEntry, schedPod spyrev1alpha1.Pod, now metav1.Time) (bool, error) {
 
 	// The Pod being scheduled is about to reserve what it needs in this cycle, so
@@ -737,7 +737,7 @@ func (ap *SpyrePlugin) keepReservation(ctx context.Context, live *livePods,
 		return false, nil
 	}
 
-	exists, err := live.contains(ctx, e.Pod)
+	exists, err := ap.podExists(e.Pod)
 	if err != nil {
 		return false, err
 	}
@@ -749,57 +749,36 @@ func (ap *SpyrePlugin) keepReservation(ctx context.Context, live *livePods,
 	return !e.ReservedBefore(now, reservationGracePeriod), nil
 }
 
-// livePods answers "does this Pod still exist?", listing each namespace at most
-// once per prune.
-type livePods struct {
-	k8sClient   client.Client
-	byNamespace map[string]*corev1.PodList
-}
-
-// contains reports whether pod is still present in the API. A Pod that merely
-// reuses the recorded name is not a match: ARC-style runners recreate Pods under
-// a recycled name, and the reservation belongs to the generation that made it.
-func (l *livePods) contains(ctx context.Context, pod spyrev1alpha1.Pod) (bool, error) {
+// podExists reports whether pod is still known to the scheduler. A Pod that
+// merely reuses the recorded name is not a match: ARC-style runners recreate Pods
+// under a recycled name, and the reservation belongs to the generation that made
+// it.
+//
+// The lister reflects the scheduler's Pod informer, which leaves out Pods that
+// have succeeded or failed. Their containers are gone, so a reservation they
+// still hold is treated like one whose Pod was deleted.
+func (ap *SpyrePlugin) podExists(pod spyrev1alpha1.Pod) (bool, error) {
 	if pod.Name == "" || pod.Namespace == "" {
 		// A reservation adopted from the deprecated fields can have no owner
 		// recorded at all, so there is nothing to look up. It is held until the
 		// grace period releases it.
 		return false, nil
 	}
-	list, err := l.inNamespace(ctx, pod.Namespace)
+	p, err := ap.podLister.Pods(pod.Namespace).Get(pod.Name)
+	if apierrors.IsNotFound(err) {
+		klog.Infof("Pod %s/%s (uid: %s) no longer exists", pod.Namespace, pod.Name, pod.UID)
+		return false, nil
+	}
 	if err != nil {
+		klog.Errorf("failed to look up Pod %s/%s: %s", pod.Namespace, pod.Name, err.Error())
 		return false, err
 	}
-	for i := range list.Items {
-		p := &list.Items[i]
-		if p.Name != pod.Name {
-			continue
-		}
-		if pod.UID != "" && p.UID != pod.UID {
-			klog.Infof("Pod %s/%s exists but is a different generation (reserved uid: %s, live uid: %s)",
-				pod.Namespace, pod.Name, pod.UID, p.UID)
-			continue
-		}
-		return true, nil
+	if pod.UID != "" && p.UID != pod.UID {
+		klog.Infof("Pod %s/%s exists but is a different generation (reserved uid: %s, live uid: %s)",
+			pod.Namespace, pod.Name, pod.UID, p.UID)
+		return false, nil
 	}
-	klog.Infof("Pod %s/%s (uid: %s) no longer exists", pod.Namespace, pod.Name, pod.UID)
-	return false, nil
-}
-
-func (l *livePods) inNamespace(ctx context.Context, namespace string) (*corev1.PodList, error) {
-	if list, ok := l.byNamespace[namespace]; ok {
-		return list, nil
-	}
-	list := &corev1.PodList{}
-	if err := l.k8sClient.List(ctx, list, &client.ListOptions{Namespace: namespace}); err != nil {
-		klog.Errorf("failed to get Pod list in namespace %s: %s", namespace, err.Error())
-		return nil, err
-	}
-	if l.byNamespace == nil {
-		l.byNamespace = make(map[string]*corev1.PodList)
-	}
-	l.byNamespace[namespace] = list
-	return list, nil
+	return true, nil
 }
 
 // getNumRequestedDevices returns the number and the resource name of devices that

@@ -81,7 +81,7 @@ func (ap *SpyrePlugin) reserveDevices(ctx context.Context, p *corev1.Pod, nodeNa
 		func(nodeState *spyrev1alpha1.SpyreNodeState) error {
 			klog.Infof("reservation (prior): %v", nodeState.Status.Reservations)
 
-			if err := ap.pruneStaleReservations(ctx, nodeState, p); err != nil {
+			if err := ap.pruneStaleReservations(nodeState, p); err != nil {
 				return err
 			}
 
