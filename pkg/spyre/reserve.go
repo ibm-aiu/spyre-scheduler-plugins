@@ -77,7 +77,7 @@ func (ap *SpyrePlugin) reserveDevices(ctx context.Context, p *corev1.Pod, nodeNa
 	// up to ten times with the resourceVersion it had read before choosing: once
 	// another scheduling cycle had updated the node state every one of those
 	// retries was doomed, which is where "retry number exceeded" came from.
-	_, err = ap.spyreClient.MutateNodeStateStatus(ctx, nodeName,
+	_, err = ap.nodeStates.mutateStatus(ctx, nodeName,
 		func(nodeState *spyrev1alpha1.SpyreNodeState) error {
 			klog.Infof("reservation (prior): %v", nodeState.Status.Reservations)
 
@@ -161,7 +161,7 @@ func (ap *SpyrePlugin) Unreserve(ctx context.Context, state framework.CycleState
 }
 
 func (ap *SpyrePlugin) unreserveDevices(ctx context.Context, p *corev1.Pod, nodeName string) error {
-	_, err := ap.spyreClient.MutateNodeStateStatus(ctx, nodeName,
+	_, err := ap.nodeStates.mutateStatus(ctx, nodeName,
 		func(nodeState *spyrev1alpha1.SpyreNodeState) error {
 			if !nodeState.Status.ReleaseReservation(podReference(p)) {
 				// Either Reserve never got as far as writing a reservation, or a

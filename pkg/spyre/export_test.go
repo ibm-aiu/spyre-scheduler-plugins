@@ -12,6 +12,8 @@ import (
 
 	spyreclient "github.com/ibm-aiu/spyre-operator/pkg/client"
 	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/scheduler/util/assumecache"
 )
 
 var IsAvailable = isAvailable
@@ -39,8 +41,23 @@ var IsCardManagementPod = isCardManagementPod
 var IsCardManagementRunnerPod = isCardManagementRunnerPod
 var HasSSADevice = hasSSADevice
 
+// ExportSetSpyreClient makes the plugin use ac, reading every SpyreNodeState
+// straight from the API.
 func (ap *SpyrePlugin) ExportSetSpyreClient(ac *spyreclient.SpyreClient) {
 	ap.spyreClient = ac
+	ap.nodeStates = newNodeStateStore(klog.Background(), ac, nil)
+}
+
+// ExportSetNodeStateCache makes the plugin read SpyreNodeStates from c, which
+// is treated as synced.
+func (ap *SpyrePlugin) ExportSetNodeStateCache(c *assumecache.AssumeCache) {
+	ap.nodeStates.setCache(c)
+}
+
+// ExportNewNodeStateCache returns an empty SpyreNodeState cache without an
+// informer behind it; the test fills it with assumecache.AddTestObject.
+func ExportNewNodeStateCache() *assumecache.AssumeCache {
+	return assumecache.NewAssumeCache(klog.Background(), nil, "SpyreNodeState", nodeNameIndex, nodeStateNodeName)
 }
 func (ap *SpyrePlugin) ExportSetPodLister(pl corelisters.PodLister) {
 	ap.podLister = pl

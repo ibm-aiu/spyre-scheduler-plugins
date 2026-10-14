@@ -33,10 +33,13 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
+	crcache "sigs.k8s.io/controller-runtime/pkg/cache"
 )
 
 type SpyrePlugin struct {
 	spyreClient *spyreclient.SpyreClient
+	// nodeStates serves SpyreNodeStates from an informer and writes them back.
+	nodeStates *nodeStateStore
 	// podLister answers whether the Pod holding a reservation still exists. It
 	// reads the scheduler's own Pod informer, so the answer costs no API request.
 	podLister corelisters.PodLister
@@ -71,10 +74,40 @@ func New(ctx context.Context, arg runtime.Object, h framework.Handle) (framework
 	if err != nil {
 		return nil, fmt.Errorf("failed to create spyreClient: %w", err)
 	}
+	klog.Info("starting SpyreNodeState informer")
+	nodeStateInformer, err := startNodeStateInformer(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
 	return &SpyrePlugin{
 		spyreClient: spyreClient,
+		nodeStates:  newNodeStateStore(klog.FromContext(ctx), spyreClient, nodeStateInformer),
 		podLister:   h.SharedInformerFactory().Core().V1().Pods().Lister(),
 	}, nil
+}
+
+// startNodeStateInformer starts watching SpyreNodeStates for as long as ctx
+// lives. It does not wait for the initial list: until that arrives, reads go to
+// the API.
+func startNodeStateInformer(ctx context.Context, cfg *rest.Config) (crcache.Informer, error) {
+	scheme := runtime.NewScheme()
+	if err := spyrev1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add spyre scheme: %w", err)
+	}
+	informers, err := crcache.New(cfg, crcache.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SpyreNodeState cache: %w", err)
+	}
+	informer, err := informers.GetInformer(ctx, &spyrev1alpha1.SpyreNodeState{}, crcache.BlockUntilSynced(false))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SpyreNodeState informer: %w", err)
+	}
+	go func() {
+		if err := informers.Start(ctx); err != nil {
+			klog.ErrorS(err, "SpyreNodeState informer stopped")
+		}
+	}()
+	return informer, nil
 }
 
 // SelectDevices reads the node state and chooses devices from it. Use it where
@@ -85,9 +118,9 @@ func New(ctx context.Context, arg runtime.Object, h framework.Handle) (framework
 func (ap *SpyrePlugin) SelectDevices(ctx context.Context, isPrivilegedPod bool, resourceName string,
 	numReqDevs int64, nodeName string) ([]string, *spyrev1alpha1.SpyreNodeState, error) {
 
-	nodeState, err := ap.spyreClient.GetSpyreNodeState(ctx, nodeName)
+	nodeState, err := ap.nodeStates.get(ctx, nodeName)
 	if err != nil {
-		klog.Errorf("failed to get SpyreNodeState for node: %v", nodeState)
+		klog.Errorf("failed to get SpyreNodeState for node %s: %v", nodeName, err)
 		return nil, nil, err
 	}
 	// Reservations written by a component that predates ReservationEntry have to
@@ -657,7 +690,7 @@ func podReference(p *corev1.Pod) spyrev1alpha1.Pod {
 // cleanupOrphanReservation removes the reservations on a node that can no longer
 // belong to a live Pod, and returns the resulting node state.
 func (ap *SpyrePlugin) cleanupOrphanReservation(ctx context.Context, nodeName string, schedPod *corev1.Pod) (*spyrev1alpha1.SpyreNodeState, error) { //nolint:lll
-	return ap.spyreClient.MutateNodeStateStatus(ctx, nodeName,
+	return ap.nodeStates.mutateStatus(ctx, nodeName,
 		func(nodeState *spyrev1alpha1.SpyreNodeState) error {
 			before := nodeState.Status.DeepCopy()
 			if err := ap.pruneStaleReservations(nodeState, schedPod); err != nil {
