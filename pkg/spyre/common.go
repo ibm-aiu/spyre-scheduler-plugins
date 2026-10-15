@@ -10,6 +10,7 @@ package spyre
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -220,7 +221,7 @@ func (ap *SpyrePlugin) SelectDevicesForCardManagement(pod *corev1.Pod, nodeState
 	for i := 0; len(pfs) < numPfs || len(vfs) < numVfs; i++ {
 		if i == len(nodeState.Spec.SpyreInterfaces) {
 			return nil,
-				fmt.Errorf("not enough devices remain: %d/%d PFs and %d/%d VFs available/requested",
+				fmt.Errorf("%w: %d/%d PFs and %d/%d VFs available/requested", errNotEnoughDevices,
 					len(pfs), numPfs, len(vfs), numVfs)
 		}
 		sIf := nodeState.Spec.SpyreInterfaces[i]
@@ -237,6 +238,12 @@ func (ap *SpyrePlugin) SelectDevicesForCardManagement(pod *corev1.Pod, nodeState
 	rDevs[spyreconst.VfResourceName] = vfs
 	return rDevs, nil
 }
+
+// errNotEnoughDevices marks a request that the node cannot satisfy only because
+// too few of its devices are free at the moment. The message it is wrapped in
+// says how many are free, which changes from one scheduling attempt to the next;
+// Filter reports the request alone so that the reason it gives stays the same.
+var errNotEnoughDevices = errors.New("not enough devices remain")
 
 func isSpecificDeviceRequest(resourceName string) bool {
 	return strings.Count(resourceName, "_") >= 3
@@ -271,7 +278,7 @@ func selectAnyIsolatedVfDevices(resourceName string, numReqDevs int64, nodeState
 		}
 	}
 
-	return nil, fmt.Errorf("not enough isolated VFs remain (%s): %d requested, available: %d",
+	return nil, fmt.Errorf("%w (%s): %d isolated VFs requested, available: %d", errNotEnoughDevices,
 		resourceName, int(numReqDevs), len(selected))
 }
 
@@ -295,7 +302,7 @@ func selectAnyPfDevices(resourceName string, numReqDevs int64,
 			}
 		}
 		return nil,
-			fmt.Errorf("not enough devices remain (%s): %d requested, %d available",
+			fmt.Errorf("%w (%s): %d requested, %d available", errNotEnoughDevices,
 				resourceName, int(numReqDevs), len(devs))
 	}
 
@@ -337,7 +344,7 @@ func selectAnyPfDevices(resourceName string, numReqDevs int64,
 		}
 	}
 	return nil,
-		fmt.Errorf("not enough devices remain (%s): %d requested, available: %v",
+		fmt.Errorf("%w (%s): %d requested, available: %v", errNotEnoughDevices,
 			resourceName, int(numReqDevs), tree)
 }
 
@@ -365,7 +372,7 @@ func selectTier0Devices(resourceName string, numReqDevs int64, tree [][][]string
 		return devs, nil
 	} else {
 		return nil,
-			fmt.Errorf("not enough devices remain (%s): %d requested, available: %v",
+			fmt.Errorf("%w (%s): %d requested, available: %v", errNotEnoughDevices,
 				resourceName, int(numReqDevs), tree)
 	}
 }
@@ -391,7 +398,7 @@ func selectTier1Devices(resourceName string, numReqDevs int64, tree [][][]string
 	}
 
 	return nil,
-		fmt.Errorf("not enough devices remain (%s): %d requested, available: %v",
+		fmt.Errorf("%w (%s): %d requested, available: %v", errNotEnoughDevices,
 			resourceName, int(numReqDevs), tree)
 }
 
@@ -419,7 +426,7 @@ func selectTier2Devices(resourceName string, numReqDevs int64, tree [][][]string
 
 	if firstTier1Idx == -1 || secondTier1Idx == -1 {
 		return nil,
-			fmt.Errorf("not enough devices remain (%s): %d requested, available: %v",
+			fmt.Errorf("%w (%s): %d requested, available: %v", errNotEnoughDevices,
 				resourceName, int(numReqDevs), tree)
 	}
 
@@ -448,7 +455,7 @@ func selectTier2Devices(resourceName string, numReqDevs int64, tree [][][]string
 	}
 
 	return nil,
-		fmt.Errorf("not enough devices remain (%s): %d requested, available: %v",
+		fmt.Errorf("%w (%s): %d requested, available: %v", errNotEnoughDevices,
 			resourceName, int(numReqDevs), tree)
 }
 
@@ -484,7 +491,8 @@ SelectDevice:
 	}
 
 	if int64(len(selected)) < numReqDevs {
-		return nil, nodeState, fmt.Errorf("not enough VFs remain (%d remains for %d request)", len(selected), numReqDevs)
+		return nil, nodeState, fmt.Errorf("%w (%s): %d VFs requested, %d available", errNotEnoughDevices,
+			resourceName, numReqDevs, len(selected))
 	}
 	return selected, nodeState, nil
 }

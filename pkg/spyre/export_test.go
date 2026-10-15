@@ -66,3 +66,5 @@ func (ap *SpyrePlugin) ExportSetPodLister(pl corelisters.PodLister) {
 
 var IsSchedulableAfterNodeStateChange = isSchedulableAfterNodeStateChange
 var IsSchedulableAfterPodDeletion = isSchedulableAfterPodDeletion
+
+var ErrNotEnoughDevices = errNotEnoughDevices

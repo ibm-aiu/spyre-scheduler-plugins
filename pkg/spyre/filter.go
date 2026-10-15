@@ -74,7 +74,8 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 	// card management Pod
 	if isCardManagementPod(pod, spyrepol.Status.Namespace) {
 		if _, err = ap.SelectDevicesForCardManagement(pod, nodeState, nodeName); err != nil {
-			return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
+			return selectionFailure(err, pod, nodeName,
+				fmt.Sprintf("%s for card management Pod", errNotEnoughDevices))
 		} else {
 			return framework.NewStatus(framework.Success)
 		}
@@ -123,9 +124,25 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 	}
 
 	if _, err = selectDevicesFromState(nodeState, isCardMgmtRunner, resourceName, numRequested); err != nil {
-		return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
+		return selectionFailure(err, pod, nodeName,
+			fmt.Sprintf("%s (%s): %d requested", errNotEnoughDevices, resourceName, numRequested))
 	}
 	return framework.NewStatus(framework.Success)
+}
+
+// selectionFailure rejects the node for a selection that failed with err.
+//
+// The scheduler writes the reason into the PodScheduled condition of the Pod, and
+// patches the Pod whenever the reason differs from the one already there. When
+// the node merely has too few free devices, err also says which devices are
+// free, which changes from one attempt to the next; such a failure is reported
+// as shortage, which only names the request, and the details are logged.
+func selectionFailure(err error, pod *corev1.Pod, nodeName, shortage string) *framework.Status {
+	if !errors.Is(err, errNotEnoughDevices) {
+		return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
+	}
+	klog.V(4).InfoS("node has too few free devices", "pod", klog.KObj(pod), "node", nodeName, "detail", err.Error())
+	return framework.NewStatus(framework.UnschedulableAndUnresolvable, shortage)
 }
 
 // pfAvailableForUserPod returns true if user Pod (not a cardmgmt Pod) can use PF devices.
