@@ -45,7 +45,7 @@ var _ = Describe("Common functions", func() {
 		Expect(err).NotTo(HaveOccurred())
 		ap = &spyre.SpyrePlugin{}
 		ap.ExportSetSpyreClient(spyreClient)
-		ap.ExportSetK8sClient(k8sClient)
+		ap.ExportSetPodLister(clientPodLister{k8sClient})
 	})
 
 	Context("SpyreNodeState handling", func() {
@@ -422,7 +422,7 @@ var _ = Describe("Common functions", func() {
 								Limits: map[corev1.ResourceName]resource.Quantity{
 									corev1.ResourceName(resName): twoQuant},
 							}}}}}
-			nodeState, err := spyre.CleanupOrphanReservation(ap, ctx, "node1", p)
+			nodeState, err := prunedNodeState(ap, "node1", p)
 			Expect(err).To(BeNil())
 			r := nodeState.Status.Reservations[spyreconst.PfResourceName]
 
@@ -475,7 +475,7 @@ var _ = Describe("Common functions", func() {
 			newcomer := buildPod("newcomer", ns, spyreconst.PfResourceName, 1)
 			Expect(k8sClient.Create(ctx, newcomer)).To(Succeed())
 
-			nodeState, err := spyre.CleanupOrphanReservation(ap, ctx, "node1", newcomer)
+			nodeState, err := prunedNodeState(ap, "node1", newcomer)
 			Expect(err).To(BeNil())
 
 			// Only single2's device is freed. Matching by size would have been
@@ -511,13 +511,13 @@ var _ = Describe("Common functions", func() {
 			// container may still hold /dev/vfio open.
 			restore := spyre.ExportSetReservationGracePeriod(time.Hour)
 			defer spyre.ExportSetReservationGracePeriod(restore)
-			nodeState, err = spyre.CleanupOrphanReservation(ap, ctx, "node1", successor)
+			nodeState, err = prunedNodeState(ap, "node1", successor)
 			Expect(err).To(BeNil())
 			Expect(nodeState.Status.ReservedDevices()).Should(ConsistOf("0000:1c:00.0"))
 
 			// Once it has passed, the device is released.
 			spyre.ExportSetReservationGracePeriod(0)
-			nodeState, err = spyre.CleanupOrphanReservation(ap, ctx, "node1", successor)
+			nodeState, err = prunedNodeState(ap, "node1", successor)
 			Expect(err).To(BeNil())
 			Expect(nodeState.Status.ReservedDevices()).Should(BeEmpty())
 		})
@@ -725,7 +725,8 @@ var _ = Describe("Common functions", func() {
 						Expect(devs[spyreconst.VfResourceName]).Should(HaveLen(numVfs))
 					}
 				} else {
-					Expect(err).Should(Equal(expectedError))
+					Expect(err).Should(MatchError(expectedError.Error()))
+					Expect(err).Should(MatchError(spyre.ErrNotEnoughDevices))
 				}
 			},
 				Entry("accept exact numbers", map[string]string{"app": "cardmgmt"}, 4, 4, nil),
@@ -957,6 +958,17 @@ var _ = Describe("Common functions", func() {
 		})
 	})
 })
+
+// prunedNodeState returns the state of node with the reservations that Filter
+// and Reserve treat as stale when scheduling pod removed.
+func prunedNodeState(ap *spyre.SpyrePlugin, node string, pod *corev1.Pod) (*spyrev1alpha1.SpyreNodeState, error) {
+	s, err := spyreClient.GetSpyreNodeState(context.Background(), node)
+	if err != nil {
+		return nil, err
+	}
+	s.Status.NormalizeReservations()
+	return s, spyre.PruneStaleReservations(ap, s, pod)
+}
 
 func createNewNamespace(ctx context.Context, k8sClient client.Client) string {
 	namespace := "ns" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10)

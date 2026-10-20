@@ -9,6 +9,7 @@ package spyre
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 
@@ -25,47 +26,52 @@ func (ap *SpyrePlugin) Filter(
 	ctx context.Context, cycleState framework.CycleState,
 	pod *corev1.Pod, nodeInfo framework.NodeInfo) *framework.Status {
 
-	klog.InfoS("starting filter process", "pod", pod, "node", nodeInfo.Node().Name)
+	// Filter runs once per node for every Pod, so everything it logs is
+	// multiplied by the number of nodes: keep it out of the default verbosity,
+	// and log the Pod by reference rather than dumping the whole object.
+	klog.V(4).InfoS("starting filter process", "pod", klog.KObj(pod), "node", nodeInfo.Node().Name)
 	return ap.filter(ctx, pod, nodeInfo.Node().Name)
 }
 
 func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName string) *framework.Status {
 
-	klog.Info("checking number of requested spyre PFs/VFs")
+	klog.V(5).Info("checking number of requested spyre PFs/VFs")
 	m, err := getNumRequestedDevices(pod)
 	if err != nil {
-		return framework.AsStatus(err)
+		// The request itself is malformed; retrying cannot help.
+		return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
 	}
 
 	if len(m) == 0 {
-		klog.Info("skip filter operation because Pod does not request neither PF nor VF devices.")
+		klog.V(5).Info("skip filter operation because Pod does not request neither PF nor VF devices.")
 		return framework.NewStatus(framework.Success)
 	}
 
-	klog.Info("check state in SpyreClusterPolicy")
-	spyrepol, err := ap.spyreClient.GetSpyreClusterPolicy(ctx, "spyreclusterpolicy")
+	klog.V(5).Info("check state in SpyreClusterPolicy")
+	spyrepol, err := ap.policies.get(ctx)
 	if err != nil {
 		return framework.AsStatus(
 			fmt.Errorf("failed to get SpyreClusterPolicy: %w", err))
 	}
 
-	nodeState, err := ap.cleanupOrphanReservation(ctx, nodeName, pod)
-	if err != nil {
-		return framework.AsStatus(err)
+	nodeState, status := ap.nodeStateForFilter(ctx, pod, nodeName)
+	if status != nil {
+		return status
 	}
 
 	// card management Pod
 	if isCardManagementPod(pod, spyrepol.Status.Namespace) {
 		if _, err = ap.SelectDevicesForCardManagement(pod, nodeState, nodeName); err != nil {
-			return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
-		} else {
-			return framework.NewStatus(framework.Success)
+			return selectionFailure(err, pod, nodeName,
+				fmt.Sprintf("%s for card management Pod", errNotEnoughDevices))
 		}
+		return framework.NewStatus(framework.Success)
 	}
 
 	// user Pod
 	if len(m) > 1 {
-		return framework.AsStatus(fmt.Errorf("User Pod cannot request both PF and VF devices."))
+		return framework.NewStatus(framework.UnschedulableAndUnresolvable,
+			"User Pod cannot request both PF and VF devices.")
 	}
 
 	var numRequested int64
@@ -76,35 +82,89 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 		numRequested = int64(v)
 	}
 
-	klog.Infof("Pod requests %d %s.", numRequested, resourceName)
+	klog.V(5).Infof("Pod requests %d %s.", numRequested, resourceName)
 
 	isCardMgmtRunner := isCardManagementRunnerPod(pod, spyrepol.Status.Namespace)
-
-	if !isCardMgmtRunner { // user Pod
-
-		// health-based filtering
-		if spyrepol.Status.State != spyrev1alpha1.Ready {
-			return framework.AsStatus(
-				fmt.Errorf("SpyreClusterPolicy is not ready: %s", spyrepol.Status.State))
+	if !isCardMgmtRunner {
+		if status := userPodAllowedOnNode(pod, nodeName, resourceName, spyrepol); status != nil {
+			return status
 		}
-
-		// cardmgmt-based filtering
-		pfAvailable, msg := pfAvailableForUserPod(nodeName, spyrepol)
-		if !pfAvailable && resourceName == spyreconst.PfResourceName {
-			return framework.NewStatus(
-				framework.UnschedulableAndUnresolvable,
-				fmt.Sprintf("user Pod %s/%s cannot acquire PF device on node %s: %s",
-					pod.Namespace, pod.Name, nodeName, msg))
-		}
-
-		klog.Infof("user Pod %s/%s is eligible to acquire device on node %s: %s",
-			pod.Namespace, pod.Name, nodeName, msg)
 	}
 
-	if _, _, err = ap.SelectDevices(ctx, isCardMgmtRunner, resourceName, numRequested, nodeName); err != nil {
-		return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
+	if _, err = selectDevicesFromState(nodeState, isCardMgmtRunner, resourceName, numRequested); err != nil {
+		return selectionFailure(err, pod, nodeName,
+			fmt.Sprintf("%s (%s): %d requested", errNotEnoughDevices, resourceName, numRequested))
 	}
 	return framework.NewStatus(framework.Success)
+}
+
+// nodeStateForFilter returns the state of nodeName as Filter should judge it, or
+// the status to return instead when it cannot be had.
+//
+// Filter only reads. Stale reservations are dropped from the copy it returns so
+// that they do not count against the node; Reserve drops them for real when it
+// writes the node state back, before it reserves anything on the node.
+func (ap *SpyrePlugin) nodeStateForFilter(ctx context.Context, pod *corev1.Pod,
+	nodeName string) (*spyrev1alpha1.SpyreNodeState, *framework.Status) {
+
+	nodeState, err := ap.nodeStates.get(ctx, nodeName)
+	if errors.Is(err, errNodeStateNotFound) {
+		// Only this node is out of the question. An error status would abort
+		// the scheduling of the Pod on every node.
+		return nil, framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
+	}
+	if err != nil {
+		return nil, framework.AsStatus(err)
+	}
+	nodeState.Status.NormalizeReservations()
+	if err := ap.pruneStaleReservations(nodeState, pod); err != nil {
+		return nil, framework.AsStatus(err)
+	}
+	return nodeState, nil
+}
+
+// userPodAllowedOnNode checks what the SpyreClusterPolicy says about a user Pod
+// (not a card management Pod): that the policy is ready, and that the node may
+// give out PFs. It returns the status to reject the node with, or nil.
+func userPodAllowedOnNode(pod *corev1.Pod, nodeName, resourceName string,
+	spyrepol *spyrev1alpha1.SpyreClusterPolicy) *framework.Status {
+
+	// health-based filtering
+	// An error status would send the Pod round the backoff queue for as
+	// long as the policy stays unready; rejecting it instead parks it until
+	// the policy changes.
+	if spyrepol.Status.State != spyrev1alpha1.Ready {
+		return framework.NewStatus(framework.UnschedulableAndUnresolvable,
+			fmt.Sprintf("SpyreClusterPolicy is not ready: %s", spyrepol.Status.State))
+	}
+
+	// cardmgmt-based filtering
+	pfAvailable, msg := pfAvailableForUserPod(nodeName, spyrepol)
+	if !pfAvailable && resourceName == spyreconst.PfResourceName {
+		return framework.NewStatus(
+			framework.UnschedulableAndUnresolvable,
+			fmt.Sprintf("user Pod %s/%s cannot acquire PF device on node %s: %s",
+				pod.Namespace, pod.Name, nodeName, msg))
+	}
+
+	klog.V(5).Infof("user Pod %s/%s is eligible to acquire device on node %s: %s",
+		pod.Namespace, pod.Name, nodeName, msg)
+	return nil
+}
+
+// selectionFailure rejects the node for a selection that failed with err.
+//
+// The scheduler writes the reason into the PodScheduled condition of the Pod, and
+// patches the Pod whenever the reason differs from the one already there. When
+// the node merely has too few free devices, err also says which devices are
+// free, which changes from one attempt to the next; such a failure is reported
+// as shortage, which only names the request, and the details are logged.
+func selectionFailure(err error, pod *corev1.Pod, nodeName, shortage string) *framework.Status {
+	if !errors.Is(err, errNotEnoughDevices) {
+		return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
+	}
+	klog.V(4).InfoS("node has too few free devices", "pod", klog.KObj(pod), "node", nodeName, "detail", err.Error())
+	return framework.NewStatus(framework.UnschedulableAndUnresolvable, shortage)
 }
 
 // pfAvailableForUserPod returns true if user Pod (not a cardmgmt Pod) can use PF devices.
