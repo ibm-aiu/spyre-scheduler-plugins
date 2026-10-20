@@ -132,66 +132,105 @@ var errCachedStateRejected = errors.New("mutation failed against cached SpyreNod
 func (s *nodeStateStore) mutateStatus(ctx context.Context, nodeName string,
 	mutate func(*spyrev1alpha1.SpyreNodeState) error) (*spyrev1alpha1.SpyreNodeState, error) {
 
-	var result *spyrev1alpha1.SpyreNodeState
-	var mutateErr error
-	var objName string
-	fromCache := s.cache != nil
-
-	err := retry.OnError(nodeStateUpdateBackoff, isRetriableMutation, func() error {
-		mutateErr = nil
-		var nodeState *spyrev1alpha1.SpyreNodeState
-		var err error
-		if fromCache {
-			nodeState, err = s.get(ctx, nodeName)
-		} else {
-			nodeState, err = s.getLive(ctx, nodeName, objName)
-		}
-		cached := fromCache
-		fromCache = false
-		if err != nil {
-			if cached {
-				// The object may be too new for the cache to have seen it.
-				klog.V(4).Infof("SpyreNodeState of node %s not in cache, retrying against the API: %v", nodeName, err)
-				return errCachedStateRejected
-			}
-			return fmt.Errorf("failed to get SpyreNodeState: %w", err)
-		}
-		objName = nodeState.Name
-
-		nodeState.Status.NormalizeReservations()
-		if err := mutate(nodeState); err != nil {
-			if errors.Is(err, spyreclient.ErrNoStatusChange) {
-				result = nodeState
-				return nil
-			}
-			mutateErr = err
-			if cached {
-				klog.V(4).Infof("mutation of cached SpyreNodeState of node %s failed, retrying against the API: %v",
-					nodeName, err)
-				return errCachedStateRejected
-			}
-			return err
-		}
-		if _, err := s.spyreClient.UpdateStatus(ctx, nodeState, false); err != nil {
-			// A conflict here is expected whenever another scheduling cycle or
-			// the device plugin touched the node state, or the cache was behind;
-			// the retry re-reads from the API and lets mutate recompute.
-			if k8serr.IsConflict(err) {
-				klog.Infof("SpyreNodeState status update conflicted for node %s, retrying: %v", nodeName, err)
-			}
-			return err
-		}
-		s.assume(nodeState)
-		result = nodeState
-		return nil
-	})
-	if err != nil {
-		if mutateErr != nil {
-			return nil, mutateErr
+	m := &mutation{store: s, nodeName: nodeName, mutate: mutate, fromCache: s.cache != nil}
+	if err := retry.OnError(nodeStateUpdateBackoff, isRetriableMutation, func() error { return m.attempt(ctx) }); err != nil {
+		if m.mutateErr != nil {
+			return nil, m.mutateErr
 		}
 		return nil, fmt.Errorf("failed to mutate SpyreNodeState status of node %s: %w", nodeName, err)
 	}
-	return result, nil
+	return m.result, nil
+}
+
+// mutation is one mutateStatus call: the attempts it makes share where the next
+// one reads from, and what the last one produced.
+type mutation struct {
+	store    *nodeStateStore
+	nodeName string
+	mutate   func(*spyrev1alpha1.SpyreNodeState) error
+
+	// fromCache is true until the first attempt has been made.
+	fromCache bool
+	// objName is the object name found by the first read, which later reads use.
+	objName string
+
+	// result is the state that was written, or read when nothing needed writing.
+	result *spyrev1alpha1.SpyreNodeState
+	// mutateErr is the error mutate returned in the last attempt, if any.
+	mutateErr error
+}
+
+// attempt makes one read-modify-write cycle. An error that isRetriableMutation
+// accepts makes the caller try again.
+func (m *mutation) attempt(ctx context.Context) error {
+	m.mutateErr = nil
+	cached := m.fromCache
+	m.fromCache = false
+
+	nodeState, err := m.read(ctx, cached)
+	if err != nil {
+		return err
+	}
+	m.objName = nodeState.Name
+
+	nodeState.Status.NormalizeReservations()
+	if err := m.mutate(nodeState); err != nil {
+		return m.mutationFailed(nodeState, err, cached)
+	}
+	if err := m.write(ctx, nodeState); err != nil {
+		return err
+	}
+	m.result = nodeState
+	return nil
+}
+
+// read returns the state to mutate: from the cache on the first attempt, from
+// the API on the later ones.
+func (m *mutation) read(ctx context.Context, cached bool) (*spyrev1alpha1.SpyreNodeState, error) {
+	if !cached {
+		nodeState, err := m.store.getLive(ctx, m.nodeName, m.objName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get SpyreNodeState: %w", err)
+		}
+		return nodeState, nil
+	}
+	nodeState, err := m.store.get(ctx, m.nodeName)
+	if err != nil {
+		// The object may be too new for the cache to have seen it.
+		klog.V(4).Infof("SpyreNodeState of node %s not in cache, retrying against the API: %v", m.nodeName, err)
+		return nil, errCachedStateRejected
+	}
+	return nodeState, nil
+}
+
+// mutationFailed turns the error mutate returned into the result of the attempt.
+func (m *mutation) mutationFailed(nodeState *spyrev1alpha1.SpyreNodeState, err error, cached bool) error {
+	if errors.Is(err, spyreclient.ErrNoStatusChange) {
+		m.result = nodeState
+		return nil
+	}
+	m.mutateErr = err
+	if cached {
+		klog.V(4).Infof("mutation of cached SpyreNodeState of node %s failed, retrying against the API: %v",
+			m.nodeName, err)
+		return errCachedStateRejected
+	}
+	return err
+}
+
+// write stores the mutated status and records it in the cache.
+func (m *mutation) write(ctx context.Context, nodeState *spyrev1alpha1.SpyreNodeState) error {
+	if _, err := m.store.spyreClient.UpdateStatus(ctx, nodeState, false); err != nil {
+		// A conflict here is expected whenever another scheduling cycle or
+		// the device plugin touched the node state, or the cache was behind;
+		// the retry re-reads from the API and lets mutate recompute.
+		if k8serr.IsConflict(err) {
+			klog.Infof("SpyreNodeState status update conflicted for node %s, retrying: %v", m.nodeName, err)
+		}
+		return err
+	}
+	m.store.assume(nodeState)
+	return nil
 }
 
 func isRetriableMutation(err error) bool {
