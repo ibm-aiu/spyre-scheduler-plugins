@@ -80,6 +80,9 @@ func nodeStateNodeName(obj interface{}) ([]string, error) {
 	return []string{nodeState.Spec.NodeName}, nil
 }
 
+// errNodeStateNotFound means the node has no SpyreNodeState.
+var errNodeStateNotFound = errors.New("no SpyreNodeState resource")
+
 // get returns a copy of the SpyreNodeState of nodeName, which the caller may
 // modify. It may be slightly behind the API.
 func (s *nodeStateStore) get(ctx context.Context, nodeName string) (*spyrev1alpha1.SpyreNodeState, error) {
@@ -91,7 +94,7 @@ func (s *nodeStateStore) get(ctx context.Context, nodeName string) (*spyrev1alph
 	case 0:
 		// The cache has seen the full list, so the node has no state. Asking
 		// the API would only repeat the answer at the price of a LIST.
-		return nil, fmt.Errorf("failed to get SpyreNodeState resource for node '%s'", nodeName)
+		return nil, fmt.Errorf("%w for node '%s'", errNodeStateNotFound, nodeName)
 	case 1:
 		return objs[0].(*spyrev1alpha1.SpyreNodeState).DeepCopy(), nil
 	default:
