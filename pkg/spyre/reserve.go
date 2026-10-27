@@ -25,9 +25,8 @@ import (
 // then add the devices to reservedSpyreInterfaces in SpyreNodeState.
 func (ap *SpyrePlugin) Reserve(
 	ctx context.Context, state framework.CycleState, p *corev1.Pod, nodeName string) *framework.Status {
-	klog.Info("start the process in Reserve extension point")
+	klog.V(4).InfoS("start the process in Reserve extension point", "pod", klog.KObj(p), "node", nodeName)
 
-	klog.Info("trying to reserve requested devices")
 	err := ap.reserveDevices(ctx, p, nodeName)
 	if err != nil {
 		return framework.NewStatus(framework.Error, err.Error())
@@ -38,14 +37,14 @@ func (ap *SpyrePlugin) Reserve(
 
 func (ap *SpyrePlugin) reserveDevices(ctx context.Context, p *corev1.Pod, nodeName string) error {
 
-	klog.Info("getting number of requested devices")
+	klog.V(4).Info("getting number of requested devices")
 	m, err := getNumRequestedDevices(p)
 	if err != nil {
 		return err
 	}
 
 	if len(m) == 0 {
-		klog.Info("skip reserve operation because Pod does not request neither PF nor VF devices.")
+		klog.V(4).Info("skip reserve operation because Pod does not request neither PF nor VF devices.")
 		return nil
 	}
 
@@ -56,10 +55,10 @@ func (ap *SpyrePlugin) reserveDevices(ctx context.Context, p *corev1.Pod, nodeNa
 		rName = k
 		nReq = int64(v)
 	}
-	klog.Infof("Spyre requests: %d (%v)", nReq, rName)
+	klog.V(4).Infof("Spyre requests: %d (%v)", nReq, rName)
 
-	klog.Info("getting SpyreClusterPolicy")
-	spyrepol, err := ap.spyreClient.GetSpyreClusterPolicy(ctx, "spyreclusterpolicy")
+	klog.V(4).Info("getting SpyreClusterPolicy")
+	spyrepol, err := ap.policies.get(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get AiuClusterPolicy: %w", err)
 	}
@@ -77,11 +76,11 @@ func (ap *SpyrePlugin) reserveDevices(ctx context.Context, p *corev1.Pod, nodeNa
 	// up to ten times with the resourceVersion it had read before choosing: once
 	// another scheduling cycle had updated the node state every one of those
 	// retries was doomed, which is where "retry number exceeded" came from.
-	_, err = ap.spyreClient.MutateNodeStateStatus(ctx, nodeName,
+	_, err = ap.nodeStates.mutateStatus(ctx, nodeName,
 		func(nodeState *spyrev1alpha1.SpyreNodeState) error {
-			klog.Infof("reservation (prior): %v", nodeState.Status.Reservations)
+			klog.V(4).Infof("reservation (prior): %v", nodeState.Status.Reservations)
 
-			if err := ap.pruneStaleReservations(ctx, nodeState, p); err != nil {
+			if err := ap.pruneStaleReservations(nodeState, p); err != nil {
 				return err
 			}
 
@@ -94,7 +93,7 @@ func (ap *SpyrePlugin) reserveDevices(ctx context.Context, p *corev1.Pod, nodeNa
 			for name, devs := range rDevs {
 				nodeState.Status.ReserveDevices(name, podReference(p), devs, reservedAt)
 			}
-			klog.Infof("reservation: %v", nodeState.Status.Reservations)
+			klog.V(4).Infof("reservation: %v", nodeState.Status.Reservations)
 			return nil
 		})
 	if err != nil {
@@ -102,7 +101,7 @@ func (ap *SpyrePlugin) reserveDevices(ctx context.Context, p *corev1.Pod, nodeNa
 		return err
 	}
 
-	klog.Info("reservation successfully finished")
+	klog.InfoS("reservation successfully finished", "pod", klog.KObj(p), "node", nodeName)
 	return nil
 }
 
@@ -114,7 +113,7 @@ func (ap *SpyrePlugin) chooseDevicesToReserve(ctx context.Context, p *corev1.Pod
 	spyrepol *spyrev1alpha1.SpyreClusterPolicy, rName string, nReq int64) (map[string][]string, error) {
 
 	if isCardManagementPod(p, spyrepol.Status.Namespace) {
-		klog.Info("reserving devices for Card Management Pod")
+		klog.V(4).Info("reserving devices for Card Management Pod")
 		rDevs, err := ap.SelectDevicesForCardManagement(p, nodeState, nodeName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to select devices for Card Management Pod: %w", err)
@@ -123,7 +122,7 @@ func (ap *SpyrePlugin) chooseDevicesToReserve(ctx context.Context, p *corev1.Pod
 	}
 
 	isCardMgmtRunner := isCardManagementRunnerPod(p, spyrepol.Status.Namespace)
-	klog.Info("checking remaining devices")
+	klog.V(4).Info("checking remaining devices")
 	nRemaining, err := ap.getNumRemainingDevices(ctx, nodeState, isCardMgmtRunner, rName)
 	if err != nil {
 		return nil, err
@@ -132,7 +131,7 @@ func (ap *SpyrePlugin) chooseDevicesToReserve(ctx context.Context, p *corev1.Pod
 		return nil, fmt.Errorf("failed to reserve enough devices: num_requested: %d, num_remaining: %d", nReq, nRemaining)
 	}
 
-	klog.Info("choosing devices")
+	klog.V(4).Info("choosing devices")
 	devs, err := selectDevicesFromState(nodeState, isCardMgmtRunner, rName, nReq)
 	if err != nil {
 		klog.ErrorS(err, "failed to select device(s)",
@@ -161,7 +160,7 @@ func (ap *SpyrePlugin) Unreserve(ctx context.Context, state framework.CycleState
 }
 
 func (ap *SpyrePlugin) unreserveDevices(ctx context.Context, p *corev1.Pod, nodeName string) error {
-	_, err := ap.spyreClient.MutateNodeStateStatus(ctx, nodeName,
+	_, err := ap.nodeStates.mutateStatus(ctx, nodeName,
 		func(nodeState *spyrev1alpha1.SpyreNodeState) error {
 			if !nodeState.Status.ReleaseReservation(podReference(p)) {
 				// Either Reserve never got as far as writing a reservation, or a
@@ -170,7 +169,7 @@ func (ap *SpyrePlugin) unreserveDevices(ctx context.Context, p *corev1.Pod, node
 				klog.Infof("no reservation to release for %s/%s on node %s", p.Namespace, p.Name, nodeName)
 				return spyreclient.ErrNoStatusChange
 			}
-			klog.Infof("reservation released, remaining: %v", nodeState.Status.Reservations)
+			klog.V(4).Infof("reservation released, remaining: %v", nodeState.Status.Reservations)
 			return nil
 		})
 	return err
