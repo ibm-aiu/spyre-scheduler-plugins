@@ -10,6 +10,7 @@ package spyre
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -140,10 +141,10 @@ func (ap *SpyrePlugin) SelectDevices(ctx context.Context, isPrivilegedPod bool, 
 	nodeState.Status.NormalizeReservations()
 
 	for i, a := range nodeState.Status.AllocationList {
-		klog.Infof("SelectDevices: nodeState.Allocation[%d]: {DeviceList: %v, Pod: %s/%s}",
+		klog.V(4).Infof("SelectDevices: nodeState.Allocation[%d]: {DeviceList: %v, Pod: %s/%s}",
 			i, a.DeviceList, a.Pod.Namespace, a.Pod.Name)
 	}
-	klog.Infof("SelectDevices: nodeState.Reservation: %v", nodeState.Status.Reservations)
+	klog.V(4).Infof("SelectDevices: nodeState.Reservation: %v", nodeState.Status.Reservations)
 
 	devs, err := selectDevicesFromState(nodeState, isPrivilegedPod, resourceName, numReqDevs)
 	return devs, nodeState, err
@@ -220,7 +221,7 @@ func (ap *SpyrePlugin) SelectDevicesForCardManagement(pod *corev1.Pod, nodeState
 	for i := 0; len(pfs) < numPfs || len(vfs) < numVfs; i++ {
 		if i == len(nodeState.Spec.SpyreInterfaces) {
 			return nil,
-				fmt.Errorf("not enough devices remain: %d/%d PFs and %d/%d VFs available/requested",
+				fmt.Errorf("%w: %d/%d PFs and %d/%d VFs available/requested", errNotEnoughDevices,
 					len(pfs), numPfs, len(vfs), numVfs)
 		}
 		sIf := nodeState.Spec.SpyreInterfaces[i]
@@ -237,6 +238,20 @@ func (ap *SpyrePlugin) SelectDevicesForCardManagement(pod *corev1.Pod, nodeState
 	rDevs[spyreconst.VfResourceName] = vfs
 	return rDevs, nil
 }
+
+// notEnoughInTree is the error for a topology-aware request that no group of the
+// device tree can satisfy. It names the request and, for the log, the groups that
+// were free.
+func notEnoughInTree(resourceName string, numReqDevs int64, tree [][][]string) error {
+	return fmt.Errorf("%w (%s): %d requested, available: %v",
+		errNotEnoughDevices, resourceName, int(numReqDevs), tree)
+}
+
+// errNotEnoughDevices marks a request that the node cannot satisfy only because
+// too few of its devices are free at the moment. The message it is wrapped in
+// says how many are free, which changes from one scheduling attempt to the next;
+// Filter reports the request alone so that the reason it gives stays the same.
+var errNotEnoughDevices = errors.New("not enough devices remain")
 
 func isSpecificDeviceRequest(resourceName string) bool {
 	return strings.Count(resourceName, "_") >= 3
@@ -271,7 +286,7 @@ func selectAnyIsolatedVfDevices(resourceName string, numReqDevs int64, nodeState
 		}
 	}
 
-	return nil, fmt.Errorf("not enough isolated VFs remain (%s): %d requested, available: %d",
+	return nil, fmt.Errorf("%w (%s): %d isolated VFs requested, available: %d", errNotEnoughDevices,
 		resourceName, int(numReqDevs), len(selected))
 }
 
@@ -295,7 +310,7 @@ func selectAnyPfDevices(resourceName string, numReqDevs int64,
 			}
 		}
 		return nil,
-			fmt.Errorf("not enough devices remain (%s): %d requested, %d available",
+			fmt.Errorf("%w (%s): %d requested, %d available", errNotEnoughDevices,
 				resourceName, int(numReqDevs), len(devs))
 	}
 
@@ -337,8 +352,7 @@ func selectAnyPfDevices(resourceName string, numReqDevs int64,
 		}
 	}
 	return nil,
-		fmt.Errorf("not enough devices remain (%s): %d requested, available: %v",
-			resourceName, int(numReqDevs), tree)
+		notEnoughInTree(resourceName, numReqDevs, tree)
 }
 
 func extractSpecifiedDevice(resourceName string) string {
@@ -365,8 +379,7 @@ func selectTier0Devices(resourceName string, numReqDevs int64, tree [][][]string
 		return devs, nil
 	} else {
 		return nil,
-			fmt.Errorf("not enough devices remain (%s): %d requested, available: %v",
-				resourceName, int(numReqDevs), tree)
+			notEnoughInTree(resourceName, numReqDevs, tree)
 	}
 }
 
@@ -391,8 +404,7 @@ func selectTier1Devices(resourceName string, numReqDevs int64, tree [][][]string
 	}
 
 	return nil,
-		fmt.Errorf("not enough devices remain (%s): %d requested, available: %v",
-			resourceName, int(numReqDevs), tree)
+		notEnoughInTree(resourceName, numReqDevs, tree)
 }
 
 // selectTier2PfDevices selects devices from two t1 groups because of end user's demand
@@ -419,8 +431,7 @@ func selectTier2Devices(resourceName string, numReqDevs int64, tree [][][]string
 
 	if firstTier1Idx == -1 || secondTier1Idx == -1 {
 		return nil,
-			fmt.Errorf("not enough devices remain (%s): %d requested, available: %v",
-				resourceName, int(numReqDevs), tree)
+			notEnoughInTree(resourceName, numReqDevs, tree)
 	}
 
 	for _, t1 := range [][][]string{tree[firstTier1Idx], tree[secondTier1Idx]} {
@@ -448,8 +459,7 @@ func selectTier2Devices(resourceName string, numReqDevs int64, tree [][][]string
 	}
 
 	return nil,
-		fmt.Errorf("not enough devices remain (%s): %d requested, available: %v",
-			resourceName, int(numReqDevs), tree)
+		notEnoughInTree(resourceName, numReqDevs, tree)
 }
 
 func selectAnyVfDevices(resourceName string, isPrivilegedPod bool, numReqDevs int64, nodeState *spyrev1alpha1.SpyreNodeState) ([]string, *spyrev1alpha1.SpyreNodeState, error) { //nolint:lll
@@ -484,7 +494,8 @@ SelectDevice:
 	}
 
 	if int64(len(selected)) < numReqDevs {
-		return nil, nodeState, fmt.Errorf("not enough VFs remain (%d remains for %d request)", len(selected), numReqDevs)
+		return nil, nodeState, fmt.Errorf("%w (%s): %d VFs requested, %d available", errNotEnoughDevices,
+			resourceName, numReqDevs, len(selected))
 	}
 	return selected, nodeState, nil
 }
@@ -662,7 +673,7 @@ func (ap *SpyrePlugin) getNumRemainingDevices(ctx context.Context, nodeState *sp
 		}
 	}
 
-	klog.Infof("getNumRemainingDevices: using regular path, count=%d, resourceName=%s", count, resourceName)
+	klog.V(4).Infof("getNumRemainingDevices: using regular path, count=%d, resourceName=%s", count, resourceName)
 	return count, nil
 }
 
@@ -720,7 +731,9 @@ func podReference(p *corev1.Pod) spyrev1alpha1.Pod {
 func (ap *SpyrePlugin) pruneStaleReservations(
 	nodeState *spyrev1alpha1.SpyreNodeState, schedPod *corev1.Pod) error {
 
-	klog.Infof("cleaning-up orphan reservation")
+	// Filter prunes a copy of the state of every node it looks at, so these
+	// messages are per node and per Pod; Reserve logs what it actually writes.
+	klog.V(4).Infof("cleaning-up orphan reservation")
 	now := metav1.Now()
 	self := podReference(schedPod)
 
@@ -735,7 +748,7 @@ func (ap *SpyrePlugin) pruneStaleReservations(
 				kept = append(kept, e)
 				continue
 			}
-			klog.Infof("releasing stale reservation of %v held by %s/%s (uid: %s) in pool %s",
+			klog.V(4).Infof("releasing stale reservation of %v held by %s/%s (uid: %s) in pool %s",
 				e.DeviceList, e.Pod.Namespace, e.Pod.Name, e.Pod.UID, resName)
 		}
 		if len(kept) == len(r.Entries) {
@@ -791,7 +804,7 @@ func (ap *SpyrePlugin) podExists(pod spyrev1alpha1.Pod) (bool, error) {
 	}
 	p, err := ap.podLister.Pods(pod.Namespace).Get(pod.Name)
 	if apierrors.IsNotFound(err) {
-		klog.Infof("Pod %s/%s (uid: %s) no longer exists", pod.Namespace, pod.Name, pod.UID)
+		klog.V(4).Infof("Pod %s/%s (uid: %s) no longer exists", pod.Namespace, pod.Name, pod.UID)
 		return false, nil
 	}
 	if err != nil {
@@ -799,7 +812,7 @@ func (ap *SpyrePlugin) podExists(pod spyrev1alpha1.Pod) (bool, error) {
 		return false, err
 	}
 	if pod.UID != "" && p.UID != pod.UID {
-		klog.Infof("Pod %s/%s exists but is a different generation (reserved uid: %s, live uid: %s)",
+		klog.V(4).Infof("Pod %s/%s exists but is a different generation (reserved uid: %s, live uid: %s)",
 			pod.Namespace, pod.Name, pod.UID, p.UID)
 		return false, nil
 	}

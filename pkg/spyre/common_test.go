@@ -725,7 +725,8 @@ var _ = Describe("Common functions", func() {
 						Expect(devs[spyreconst.VfResourceName]).Should(HaveLen(numVfs))
 					}
 				} else {
-					Expect(err).Should(Equal(expectedError))
+					Expect(err).Should(MatchError(expectedError.Error()))
+					Expect(err).Should(MatchError(spyre.ErrNotEnoughDevices))
 				}
 			},
 				Entry("accept exact numbers", map[string]string{"app": "cardmgmt"}, 4, 4, nil),

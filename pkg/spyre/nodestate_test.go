@@ -124,6 +124,29 @@ var _ = Describe("SpyreNodeState cache", Ordered, func() {
 		Expect(found).Should(BeTrue())
 	})
 
+	It("gives the same reason for a shortage however many devices are free", func() {
+		// The scheduler patches the Pod each time the reason changes, so a
+		// reason that said how many devices were free would cost a write on
+		// nearly every attempt.
+		greedy := buildPod("greedy", appNs, spyreconst.PfResourceName, 9)
+		reasonWith := func(edit func(*spyrev1alpha1.SpyreNodeState)) string {
+			nodeStateCache = spyre.ExportNewNodeStateCache()
+			ap.ExportSetNodeStateCache(nodeStateCache)
+			cacheNodeState(edit)
+			status := spyre.ExportFilter(ap, ctx, greedy, nodeName)
+			Expect(status.Code()).Should(Equal(fwk.UnschedulableAndUnresolvable), status.Message())
+			return status.Message()
+		}
+		eightFree := reasonWith(nil)
+		fourFree := reasonWith(func(s *spyrev1alpha1.SpyreNodeState) {
+			s.Status.NormalizeReservations()
+			s.Status.ReserveDevices(spyreconst.PfResourceName, spyre.PodReference(holder),
+				[]string{"0000:1c:00.0", "0000:1f:00.0", "0000:20:00.0", "0000:36:00.0"}, metav1.Now())
+		})
+		Expect(fourFree).Should(Equal(eightFree))
+		Expect(eightFree).Should(Equal("not enough devices remain (spyre_pf): 9 requested"))
+	})
+
 	It("rejects only the node when the node has no state", func() {
 		// An error status would abort the scheduling of the Pod on every node.
 		cacheNodeState(nil)

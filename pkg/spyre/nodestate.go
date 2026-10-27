@@ -225,7 +225,7 @@ func (m *mutation) write(ctx context.Context, nodeState *spyrev1alpha1.SpyreNode
 		// the device plugin touched the node state, or the cache was behind;
 		// the retry re-reads from the API and lets mutate recompute.
 		if k8serr.IsConflict(err) {
-			klog.V(4).Infof("SpyreNodeState status update conflicted for node %s, retrying: %v", m.nodeName, err)
+			klog.Infof("SpyreNodeState status update conflicted for node %s, retrying: %v", m.nodeName, err)
 		}
 		return err
 	}
