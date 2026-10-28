@@ -22,6 +22,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-logr/logr/testr"
 	"github.com/google/go-cmp/cmp"
 	topologyv1alpha2 "github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/apis/topology/v1alpha2"
 	fwk "k8s.io/kube-scheduler/framework"
@@ -29,7 +30,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
 	nrtcache "sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/cache"
@@ -686,7 +686,7 @@ func TestNodeResourceTopology(t *testing.T) {
 	}
 
 	tm := TopologyMatch{
-		nrtCache: nrtcache.NewPassthrough(klog.Background(), fakeClient),
+		nrtCache: nrtcache.NewPassthrough(testr.New(t), fakeClient),
 	}
 
 	for _, tt := range tests {
@@ -905,7 +905,7 @@ func TestNodeResourceTopologyMultiContainerPodScope(t *testing.T) {
 			}
 
 			tm := TopologyMatch{
-				nrtCache: nrtcache.NewPassthrough(klog.Background(), fakeClient),
+				nrtCache: nrtcache.NewPassthrough(testr.New(t), fakeClient),
 			}
 
 			nodeInfo := framework.NewNodeInfo()
@@ -1167,7 +1167,7 @@ func TestNodeResourceTopologyMultiContainerContainerScope(t *testing.T) {
 			}
 
 			tm := TopologyMatch{
-				nrtCache: nrtcache.NewPassthrough(klog.Background(), fakeClient),
+				nrtCache: nrtcache.NewPassthrough(testr.New(t), fakeClient),
 			}
 
 			nodeInfo := framework.NewNodeInfo()

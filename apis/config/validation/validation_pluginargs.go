@@ -29,6 +29,7 @@ import (
 var (
 	supportNodeResourcesMode sets.Set[string]
 	validScoringStrategy     sets.Set[string]
+	validPreemptionMode      sets.Set[string]
 )
 
 func init() {
@@ -43,6 +44,11 @@ func init() {
 		string(config.LeastAllocated),
 		string(config.LeastNUMANodes),
 	)
+
+	validPreemptionMode = sets.New[string](
+		string(config.PreemptionDisabled),
+		string(config.PreemptionEnabled),
+	)
 }
 
 func ValidateNodeResourceTopologyMatchArgs(path *field.Path, args *config.NodeResourceTopologyMatchArgs) error {
@@ -52,12 +58,26 @@ func ValidateNodeResourceTopologyMatchArgs(path *field.Path, args *config.NodeRe
 		allErrs = append(allErrs, err)
 	}
 
+	if args.PreemptionMode != nil {
+		preemptionModePath := path.Child("preemptionMode")
+		if err := validatePreemptionMode(*args.PreemptionMode, preemptionModePath); err != nil {
+			allErrs = append(allErrs, err)
+		}
+	}
+
 	return allErrs.ToAggregate()
 }
 
 func validateScoringStrategyType(scoringStrategy config.ScoringStrategyType, path *field.Path) *field.Error {
 	if !validScoringStrategy.Has(string(scoringStrategy)) {
 		return field.Invalid(path, scoringStrategy, "invalid ScoringStrategyType")
+	}
+	return nil
+}
+
+func validatePreemptionMode(mode config.PreemptionMode, path *field.Path) *field.Error {
+	if !validPreemptionMode.Has(string(mode)) {
+		return field.Invalid(path, mode, "invalid PreemptionMode")
 	}
 	return nil
 }
@@ -108,6 +128,60 @@ func ValidateCoschedulingArgs(args *config.CoschedulingArgs, _ *field.Path) erro
 		allErrs = append(allErrs, field.Invalid(field.NewPath("podGroupRejectPercentage"),
 			args.PodGroupRejectPercentage, "must be between 0 and 100"))
 	}
+	if len(allErrs) == 0 {
+		return nil
+	}
+	return allErrs.ToAggregate()
+}
+
+func ValidateNodeMetadataArgs(args *config.NodeMetadataArgs, path *field.Path) error {
+	var allErrs field.ErrorList
+
+	// Validate MetadataKey is not empty
+	if args.MetadataKey == "" {
+		allErrs = append(allErrs, field.Invalid(field.NewPath("metadataKey"),
+			args.MetadataKey, "metadataKey cannot be empty"))
+	}
+
+	// Validate MetadataSource
+	if args.MetadataSource != config.MetadataSourceLabel && args.MetadataSource != config.MetadataSourceAnnotation {
+		allErrs = append(allErrs, field.Invalid(field.NewPath("metadataSource"),
+			args.MetadataSource, "metadataSource must be either \"Label\" or \"Annotation\""))
+	}
+
+	// Validate MetadataType
+	if args.MetadataType != config.MetadataTypeNumber && args.MetadataType != config.MetadataTypeTimestamp {
+		allErrs = append(allErrs, field.Invalid(field.NewPath("metadataType"),
+			args.MetadataType, "metadataType must be either \"Number\" or \"Timestamp\""))
+	}
+
+	// Validate ScoringStrategy
+	validStrategies := sets.New[string](
+		string(config.ScoringStrategyHighest),
+		string(config.ScoringStrategyLowest),
+		string(config.ScoringStrategyNewest),
+		string(config.ScoringStrategyOldest),
+	)
+	if !validStrategies.Has(string(args.ScoringStrategy)) {
+		allErrs = append(allErrs, field.Invalid(field.NewPath("scoringStrategy"),
+			args.ScoringStrategy, "scoringStrategy must be one of \"Highest\", \"Lowest\", \"Newest\", or \"Oldest\""))
+	}
+
+	// Validate compatibility between MetadataType and ScoringStrategy
+	if args.MetadataType == config.MetadataTypeNumber {
+		if args.ScoringStrategy == config.ScoringStrategyNewest || args.ScoringStrategy == config.ScoringStrategyOldest {
+			allErrs = append(allErrs, field.Invalid(field.NewPath("scoringStrategy"),
+				args.ScoringStrategy, "scoringStrategy \"Newest\" and \"Oldest\" are only valid for metadataType \"Timestamp\""))
+		}
+	}
+
+	if args.MetadataType == config.MetadataTypeTimestamp {
+		if args.ScoringStrategy == config.ScoringStrategyHighest || args.ScoringStrategy == config.ScoringStrategyLowest {
+			allErrs = append(allErrs, field.Invalid(field.NewPath("scoringStrategy"),
+				args.ScoringStrategy, "scoringStrategy \"Highest\" and \"Lowest\" are only valid for metadataType \"Number\""))
+		}
+	}
+
 	if len(allErrs) == 0 {
 		return nil
 	}

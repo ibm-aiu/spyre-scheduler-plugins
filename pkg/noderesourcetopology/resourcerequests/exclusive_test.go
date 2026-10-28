@@ -22,6 +22,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
 )
 
 type testCase struct {
@@ -44,12 +46,127 @@ func TestIncludeNonNative(t *testing.T) {
 }
 
 func TestAreExclusiveForPod(t *testing.T) {
+	nrtResources := sets.New(corev1.ResourceName("veryfast.io/fpga"))
 	tcases := coreTestCases()
 	for _, tt := range tcases {
 		t.Run(tt.name, func(t *testing.T) {
-			got := AreExclusiveForPod(tt.pod)
+			got := AreExclusiveForPod(tt.pod, nrtResources)
 			if got != tt.expectedExclusive {
 				t.Errorf("%s: exclusive resources detected %v expected %v", tt.name, got, tt.expectedExclusive)
+			}
+		})
+	}
+}
+
+func TestAreExclusiveForPodNRTScoped(t *testing.T) {
+	tests := []struct {
+		name         string
+		pod          *corev1.Pod
+		nrtResources sets.Set[corev1.ResourceName]
+		expected     bool
+	}{
+		{
+			name: "device-in-nrt-is-exclusive",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pod",
+					Namespace: "default",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "cnt",
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceName("veryfast.io/fpga"): resource.MustParse("1"),
+								},
+							},
+						},
+					},
+				},
+			},
+			nrtResources: sets.New(corev1.ResourceName("veryfast.io/fpga")),
+			expected:     true,
+		},
+		{
+			name: "device-not-in-nrt-is-not-exclusive",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pod",
+					Namespace: "default",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "cnt",
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceName("veryfast.io/fpga"): resource.MustParse("1"),
+								},
+							},
+						},
+					},
+				},
+			},
+			nrtResources: sets.New[corev1.ResourceName](),
+			expected:     false,
+		},
+		{
+			name: "nil-nrt-resources-device-not-exclusive",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pod",
+					Namespace: "default",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "cnt",
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceName("veryfast.io/fpga"): resource.MustParse("1"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "gu-cpu-exclusive-regardless-of-nrt",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pod",
+					Namespace: "default",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "cnt",
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("4"),
+									corev1.ResourceMemory: resource.MustParse("2Gi"),
+								},
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("4"),
+									corev1.ResourceMemory: resource.MustParse("2Gi"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AreExclusiveForPod(tt.pod, tt.nrtResources)
+			if got != tt.expected {
+				t.Errorf("%s: exclusive resources detected %v expected %v", tt.name, got, tt.expected)
 			}
 		})
 	}
@@ -122,6 +239,35 @@ func coreTestCases() []testCase {
 				},
 			},
 			expectedNonNative: false,
+			expectedExclusive: false,
+		},
+		{
+			name: "single-sidecar-initcontainer-gu-no-devs",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pod",
+					Namespace: "default",
+				},
+				Spec: corev1.PodSpec{
+					InitContainers: []corev1.Container{
+						{
+							Name: "cnt",
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("4"),
+									corev1.ResourceMemory: resource.MustParse("2Gi"),
+								},
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("4"),
+									corev1.ResourceMemory: resource.MustParse("2Gi"),
+								},
+							},
+							RestartPolicy: ptr.To(corev1.ContainerRestartPolicyAlways),
+						},
+					},
+				},
+			},
+			expectedNonNative: false,
 			expectedExclusive: true,
 		},
 		{
@@ -169,6 +315,33 @@ func coreTestCases() []testCase {
 									corev1.ResourceName("veryfast.io/fpga"): resource.MustParse("1"),
 								},
 							},
+						},
+					},
+				},
+			},
+			expectedNonNative: true,
+			expectedExclusive: false,
+		},
+		{
+			name: "single-sidecar-initcontainer-devs-only",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pod",
+					Namespace: "default",
+				},
+				Spec: corev1.PodSpec{
+					InitContainers: []corev1.Container{
+						{
+							Name: "cnt",
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceName("veryfast.io/fpga"): resource.MustParse("1"),
+								},
+								Requests: corev1.ResourceList{
+									corev1.ResourceName("veryfast.io/fpga"): resource.MustParse("1"),
+								},
+							},
+							RestartPolicy: ptr.To(corev1.ContainerRestartPolicyAlways),
 						},
 					},
 				},

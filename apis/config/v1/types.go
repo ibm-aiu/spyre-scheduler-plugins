@@ -195,6 +195,20 @@ const (
 	CacheResyncScopeOnlyResources CacheResyncScope = "OnlyResources"
 )
 
+// PreemptionMode is a "string" type
+type PreemptionMode string
+
+const (
+	// PreemptionDisabled when set, the plugin will continue running the post-Filter phase without
+	// post-eviction simulation of the victim pods, preserving the old behavior of default preemption
+	// with the plugin, including keeping same memory footprint.
+	PreemptionDisabled PreemptionMode = "Disabled"
+	// PreemptionEnabled when set, the plugin will act upon preemption requests from the scheduler,
+	// depending on the cache implementation. If no preemption request is received, the plugin will continue
+	// to collect and store the least needed data in order to satisfy the preemption request when it is received.
+	PreemptionEnabled PreemptionMode = "Enabled"
+)
+
 // NodeResourceTopologyCache define configuration details for the NodeResourceTopology cache.
 type NodeResourceTopologyCache struct {
 	// ForeignPodsDetect sets how foreign pods should be handled.
@@ -240,6 +254,9 @@ type NodeResourceTopologyMatchArgs struct {
 	DiscardReservedNodes bool `json:"discardReservedNodes,omitempty"`
 	// Cache enables to fine tune the caching behavior
 	Cache *NodeResourceTopologyCache `json:"cache,omitempty"`
+	// PreemptionMode controls the preemption mode of the plugin. Must be explicitly set to
+	// "Enabled" to opt in. Defaults to "Disabled".
+	PreemptionMode *PreemptionMode `json:"preemptionMode,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -301,4 +318,70 @@ type PowerModel struct {
 	K2 float64 `json:"k2"`
 	// Power = K0 + K1 * e ^(K2 * x) : where x is utilisation
 	// Idle power of node will be K0 + K1
+}
+
+// MetadataSourceType defines where to look for metadata
+type MetadataSourceType string
+
+const (
+	// MetadataSourceLabel indicates metadata should be read from node labels
+	MetadataSourceLabel MetadataSourceType = "Label"
+	// MetadataSourceAnnotation indicates metadata should be read from node annotations
+	MetadataSourceAnnotation MetadataSourceType = "Annotation"
+)
+
+// MetadataValueType defines the type of metadata value
+type MetadataValueType string
+
+const (
+	// MetadataTypeNumber indicates the metadata value is a numeric value
+	MetadataTypeNumber MetadataValueType = "Number"
+	// MetadataTypeTimestamp indicates the metadata value is a timestamp
+	MetadataTypeTimestamp MetadataValueType = "Timestamp"
+)
+
+// MetadataScoringStrategy defines how to score nodes based on metadata values
+type MetadataScoringStrategy string
+
+const (
+	// ScoringStrategyHighest favors nodes with highest numeric values
+	ScoringStrategyHighest MetadataScoringStrategy = "Highest"
+	// ScoringStrategyLowest favors nodes with lowest numeric values
+	ScoringStrategyLowest MetadataScoringStrategy = "Lowest"
+	// ScoringStrategyNewest favors nodes with newest (most recent) timestamps
+	ScoringStrategyNewest MetadataScoringStrategy = "Newest"
+	// ScoringStrategyOldest favors nodes with oldest timestamps
+	ScoringStrategyOldest MetadataScoringStrategy = "Oldest"
+)
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+// NodeMetadataArgs holds arguments used to configure the NodeMetadata plugin.
+type NodeMetadataArgs struct {
+	metav1.TypeMeta `json:",inline"`
+
+	// MetadataKey is the name of the label or annotation to use for scoring
+	MetadataKey *string `json:"metadataKey,omitempty"`
+
+	// MetadataSource indicates whether to read from labels or annotations
+	// Valid values: "Label", "Annotation"
+	MetadataSource *MetadataSourceType `json:"metadataSource,omitempty"`
+
+	// MetadataType indicates the type of value in the metadata
+	// Valid values: "Number", "Timestamp"
+	MetadataType *MetadataValueType `json:"metadataType,omitempty"`
+
+	// ScoringStrategy defines how nodes should be scored
+	// For Number type: "Highest" or "Lowest"
+	// For Timestamp type: "Newest" or "Oldest"
+	ScoringStrategy *MetadataScoringStrategy `json:"scoringStrategy,omitempty"`
+
+	// TimestampFormat is the Go time format string for parsing timestamps
+	// Only used when MetadataType is "Timestamp"
+	// Default: time.RFC3339 ("2006-01-02T15:04:05Z07:00")
+	// Examples:
+	//   - RFC3339: "2006-01-02T15:04:05Z07:00"
+	//   - Unix timestamp: Use MetadataType "Number" instead
+	//   - Custom: "2006-01-02 15:04:05"
+	TimestampFormat *string `json:"timestampFormat,omitempty"`
 }

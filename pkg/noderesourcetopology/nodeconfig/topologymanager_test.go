@@ -20,7 +20,8 @@ import (
 	"reflect"
 	"testing"
 
-	"k8s.io/klog/v2"
+	"github.com/go-logr/logr/testr"
+
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 
 	topologyv1alpha2 "github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/apis/topology/v1alpha2"
@@ -418,7 +419,7 @@ func TestConfigFromAttributes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := TopologyManager{}
 			cfg := &got // shortcut
-			cfg.updateFromAttributes(klog.Background(), tt.attrs)
+			cfg.updateFromAttributes(testr.New(t), tt.attrs)
 			if !reflect.DeepEqual(got, tt.expected) {
 				t.Errorf("conf got=%+#v expected=%+#v", got, tt.expected)
 			}
@@ -488,7 +489,7 @@ func TestConfigFromPolicies(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := TopologyManager{}
 			cfg := &got // shortcut\
-			cfg.updateFromPolicies(klog.Background(), "", tt.policies)
+			cfg.updateFromPolicies(testr.New(t), "", tt.policies)
 			if !reflect.DeepEqual(got, tt.expected) {
 				t.Errorf("conf got=%+#v expected=%+#v", got, tt.expected)
 			}
@@ -596,7 +597,7 @@ func TestConfigFromNRT(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := TopologyManagerFromNodeResourceTopology(klog.Background(), &tt.nrt)
+			got := TopologyManagerFromNodeResourceTopology(testr.New(t), &tt.nrt)
 			if !reflect.DeepEqual(got, tt.expected) {
 				t.Errorf("conf got=%+#v expected=%+#v", got, tt.expected)
 			}

@@ -18,10 +18,13 @@ package v1
 
 import (
 	"strconv"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+
 	schedulerconfigv1 "k8s.io/kube-scheduler/config/v1"
 	k8sschedulerconfigv1 "k8s.io/kubernetes/pkg/scheduler/apis/config/v1"
 )
@@ -91,6 +94,8 @@ var (
 	defaultResyncMethod = CacheResyncAutodetect
 
 	defaultInformerMode = CacheInformerDedicated
+
+	defaultPreemptionMode = PreemptionDisabled
 
 	// Defaults for NetworkOverhead
 	// DefaultWeightsName contains the default costs to be used by networkAware plugins
@@ -215,6 +220,10 @@ func SetDefaults_NodeResourceTopologyMatchArgs(obj *NodeResourceTopologyMatchArg
 	if obj.Cache.InformerMode == nil {
 		obj.Cache.InformerMode = &defaultInformerMode
 	}
+
+	if obj.PreemptionMode == nil {
+		obj.PreemptionMode = &defaultPreemptionMode
+	}
 }
 
 // SetDefaults_PreemptionTolerationArgs reuses SetDefaults_DefaultPreemptionArgs
@@ -252,5 +261,12 @@ func SetDefaults_SySchedArgs(obj *SySchedArgs) {
 
 	if obj.DefaultProfileName == nil {
 		obj.DefaultProfileName = &DefaultSySchedProfileName
+	}
+}
+
+// SetDefaults_NodeMetadataArgs sets the default parameters for NodeMetadataArgs plugin.
+func SetDefaults_NodeMetadataArgs(obj *NodeMetadataArgs) {
+	if obj.TimestampFormat == nil && obj.MetadataType != nil && *obj.MetadataType == MetadataTypeTimestamp {
+		obj.TimestampFormat = ptr.To(time.RFC3339)
 	}
 }
