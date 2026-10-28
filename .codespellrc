@@ -2,6 +2,10 @@
 skip = go.*,*.gen.*,
      *.jpeg,*.png,*.png,*.svg,*.drawio,*.bu,
      assets/**/*.yaml,
-     apis/**,kep/**,pkg/coscheduling/**,hack/**,site/**,test/**,
-     pkg/noderesourcetopology/**,pkg/trimaran/**
+     apis/**,kep/**,hack/**,site/**,test/**,
+     pkg/capacityscheduling/**,pkg/controllers/**,pkg/coscheduling/**,
+     pkg/crossnodepreemption/**,pkg/generated/**,pkg/networkaware/**,
+     pkg/nodemetadata/**,pkg/noderesources/**,pkg/noderesourcetopology/**,
+     pkg/podstate/**,pkg/preemptiontoleration/**,pkg/qos/**,pkg/sysched/**,
+     pkg/trimaran/**,pkg/util/**
 ignore-words-list = AfterAll,bu
