@@ -26,7 +26,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/klog/v2"
 	fwk "k8s.io/kube-scheduler/framework"
-	"k8s.io/kubernetes/pkg/scheduler/framework"
+	"k8s.io/utils/ptr"
 
 	apiconfig "sigs.k8s.io/scheduler-plugins/apis/config"
 	"sigs.k8s.io/scheduler-plugins/apis/config/validation"
@@ -75,13 +75,15 @@ type TopologyMatch struct {
 	nrtCache            nrtcache.Interface
 	scoreStrategyFunc   scoreStrategyFn
 	scoreStrategyType   apiconfig.ScoringStrategyType
+	preemptionMode      apiconfig.PreemptionMode
 }
 
-var _ framework.FilterPlugin = &TopologyMatch{}
-var _ framework.ReservePlugin = &TopologyMatch{}
-var _ framework.ScorePlugin = &TopologyMatch{}
-var _ framework.EnqueueExtensions = &TopologyMatch{}
-var _ framework.PostBindPlugin = &TopologyMatch{}
+var _ fwk.PreFilterPlugin = &TopologyMatch{}
+var _ fwk.FilterPlugin = &TopologyMatch{}
+var _ fwk.ReservePlugin = &TopologyMatch{}
+var _ fwk.ScorePlugin = &TopologyMatch{}
+var _ fwk.EnqueueExtensions = &TopologyMatch{}
+var _ fwk.PostBindPlugin = &TopologyMatch{}
 
 // Name returns name of the plugin. It is used in logs, etc.
 func (tm *TopologyMatch) Name() string {
@@ -89,7 +91,7 @@ func (tm *TopologyMatch) Name() string {
 }
 
 // New initializes a new plugin and returns it.
-func New(ctx context.Context, args runtime.Object, handle framework.Handle) (framework.Plugin, error) {
+func New(ctx context.Context, args runtime.Object, handle fwk.Handle) (fwk.Plugin, error) {
 	lh := klog.FromContext(ctx)
 
 	lh.V(5).Info("creating new noderesourcetopology plugin")
@@ -101,6 +103,11 @@ func New(ctx context.Context, args runtime.Object, handle framework.Handle) (fra
 	if err := validation.ValidateNodeResourceTopologyMatchArgs(nil, tcfg); err != nil {
 		return nil, err
 	}
+
+	// this is not needed for production flow because by the time the plugin is created,
+	// the args would already have the preemption mode normalized. However we keep it to ensure
+	// no panics while addressing the value of a nil pointer.
+	tcfg.PreemptionMode = ptr.To(getPreemptionMode(lh, tcfg))
 
 	nrtCache, err := initNodeTopologyInformer(ctx, lh, tcfg, handle)
 	if err != nil {
@@ -129,6 +136,7 @@ func New(ctx context.Context, args runtime.Object, handle framework.Handle) (fra
 		nrtCache:            nrtCache,
 		scoreStrategyFunc:   strategy,
 		scoreStrategyType:   tcfg.ScoringStrategy.Type,
+		preemptionMode:      *tcfg.PreemptionMode,
 	}
 
 	return topologyMatch, nil

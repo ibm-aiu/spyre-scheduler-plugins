@@ -19,12 +19,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	fwk "k8s.io/kube-scheduler/framework"
-	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 // this file implements EnqueueExtensions interface of the scheduling framework.
 
-var _ framework.EnqueueExtensions = &SpyrePlugin{}
+var _ fwk.EnqueueExtensions = &SpyrePlugin{}
 
 // Custom resources are registered as <plural>.<version>.<group>; the scheduler
 // watches them with a dynamic informer.

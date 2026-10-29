@@ -20,10 +20,10 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/go-logr/logr/testr"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
 	"sigs.k8s.io/scheduler-plugins/pkg/noderesourcetopology/nodeconfig"
 )
@@ -685,7 +685,7 @@ func TestNUMANodesRequired(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			bm, isMinDistance := numaNodesRequired(klog.Background(), v1.PodQOSGuaranteed, tc.numaNodes, tc.podResources)
+			bm, isMinDistance := numaNodesRequired(testr.New(t), v1.PodQOSGuaranteed, tc.numaNodes, tc.podResources)
 
 			if bm != nil && !bm.IsEqual(tc.expectedBitmask) {
 				t.Errorf("wrong bitmask expected: %d got: %d", tc.expectedBitmask, bm)
@@ -903,7 +903,7 @@ func TestMinDistance(t *testing.T) {
 	}
 	for _, tc := range tcases {
 		t.Run(tc.description, func(t *testing.T) {
-			distance := minAvgDistanceInCombinations(klog.Background(), tc.numaNodes, tc.combinations)
+			distance := minAvgDistanceInCombinations(testr.New(t), tc.numaNodes, tc.combinations)
 			if distance != tc.expected {
 				t.Errorf("Expected distance to be %f not %f", tc.expected, distance)
 			}

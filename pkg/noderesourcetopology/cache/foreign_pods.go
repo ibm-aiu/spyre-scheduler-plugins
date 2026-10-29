@@ -39,14 +39,15 @@ var (
 	onlyExclusiveResources = false
 )
 
-func SetupForeignPodsDetector(lh logr.Logger, schedProfileName string, podInformer k8scache.SharedInformer, cc Interface) {
+func SetupForeignPodsDetector(lh logr.Logger, schedProfileName string, podInformer k8scache.SharedInformer, cc *OverReserve) {
 	foreignCache := func(obj interface{}) {
 		pod, ok := obj.(*corev1.Pod)
 		if !ok {
 			lh.V(3).Info("unsupported object", "kind", fmt.Sprintf("%T", obj))
 			return
 		}
-		if !IsForeignPod(pod) {
+		nrtResources := cc.nrtResNames.Get(pod.Spec.NodeName)
+		if !IsForeignPod(pod, nrtResources) {
 			return
 		}
 
@@ -78,7 +79,7 @@ func RegisterSchedulerProfileName(lh logr.Logger, schedProfileName string) {
 	lh.V(5).Info("registered scheduler profiles", "names", schedProfileNames.UnsortedList())
 }
 
-func IsForeignPod(pod *corev1.Pod) bool {
+func IsForeignPod(pod *corev1.Pod, nrtResources sets.Set[corev1.ResourceName]) bool {
 	if pod.Spec.NodeName == "" {
 		// nothing to do yet
 		return false
@@ -90,7 +91,7 @@ func IsForeignPod(pod *corev1.Pod) bool {
 	if !onlyExclusiveResources {
 		return true
 	}
-	return resourcerequests.AreExclusiveForPod(pod)
+	return resourcerequests.AreExclusiveForPod(pod, nrtResources)
 }
 
 // for testing only; NOT thread safe
