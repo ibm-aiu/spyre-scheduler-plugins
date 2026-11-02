@@ -157,19 +157,31 @@ var _ = Describe("SpyreNodeState cache", Ordered, func() {
 		Expect(status.Code()).Should(Equal(fwk.UnschedulableAndUnresolvable), status.Message())
 	})
 
-	It("rejects user Pods while the cluster policy is not ready", func() {
-		cacheNodeState(nil)
-		pol, err := spyreClient.GetSpyreClusterPolicy(ctx, spyrepolName)
-		Expect(err).To(BeNil())
-		pol.Status.State = spyrev1alpha1.NotReady
-		_, err = spyreClient.UpdateSpyreClusterPolicyStatus(ctx, pol, true)
-		Expect(err).To(BeNil())
+	DescribeTable("filters user Pods by the state of the cluster policy",
+		func(state spyrev1alpha1.State, schedulable bool) {
+			cacheNodeState(nil)
+			pol, err := spyreClient.GetSpyreClusterPolicy(ctx, spyrepolName)
+			Expect(err).To(BeNil())
+			pol.Status.State = state
+			_, err = spyreClient.UpdateSpyreClusterPolicyStatus(ctx, pol, true)
+			Expect(err).To(BeNil())
 
-		// The Pod waits for the policy to change rather than cycling through
-		// the backoff queue.
-		status := spyre.ExportFilter(ap, ctx, holder, nodeName)
-		Expect(status.Code()).Should(Equal(fwk.UnschedulableAndUnresolvable), status.Message())
-	})
+			status := spyre.ExportFilter(ap, ctx, holder, nodeName)
+			if schedulable {
+				Expect(status.IsSuccess()).Should(BeTrue(), status.Message())
+				return
+			}
+			// The Pod waits for the policy to change rather than cycling
+			// through the backoff queue.
+			Expect(status.Code()).Should(Equal(fwk.UnschedulableAndUnresolvable), status.Message())
+		},
+		Entry("ready", spyrev1alpha1.Ready, true),
+		Entry("degraded", spyrev1alpha1.Degraded, true),
+		Entry("not ready", spyrev1alpha1.NotReady, false),
+		Entry("ignored", spyrev1alpha1.Ignored, false),
+		Entry("no Spyre nodes", spyrev1alpha1.NoSpyreNodes, false),
+		Entry("no node feature discovery", spyrev1alpha1.NoNFD, false),
+	)
 
 	It("does not hand out a device the cache does not know is taken", func() {
 		// The cache holds the state from before another Pod reserved seven of
