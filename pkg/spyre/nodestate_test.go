@@ -44,7 +44,10 @@ var _ = Describe("SpyreNodeState cache", Ordered, func() {
 		Expect(k8sClient.Create(ctx, holder)).To(Succeed())
 		prepareSpyreNodeState([]string{}, [][]string{{"0000:b9:00.0"}}, []spyrev1alpha1.Pod{spyre.PodReference(holder)})
 
-		pol := &spyrev1alpha1.SpyreClusterPolicy{ObjectMeta: metav1.ObjectMeta{Name: spyrepolName}}
+		pol := &spyrev1alpha1.SpyreClusterPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: spyrepolName},
+			Spec:       spyrev1alpha1.SpyreClusterPolicySpec{DevicePlugin: spyrev1alpha1.DevicePluginSpec{Mode: spyrev1alpha1.DevicePluginModeClassic}},
+		}
 		pol, err = spyreClient.CreateSpyreClusterPolicy(ctx, pol)
 		Expect(err).To(BeNil())
 		pol.Status.Namespace = "aiu-operator"

@@ -209,6 +209,9 @@ var _ = Describe("Filter Plugin", func() {
 			ctx = context.Background()
 			p := &spyrev1alpha1.SpyreClusterPolicy{
 				ObjectMeta: metav1.ObjectMeta{Name: spyrepolName},
+				Spec: spyrev1alpha1.SpyreClusterPolicySpec{
+					DevicePlugin: spyrev1alpha1.DevicePluginSpec{Mode: spyrev1alpha1.DevicePluginModeClassic},
+				},
 			}
 			p, err := spyreClient.CreateSpyreClusterPolicy(ctx, p)
 			Expect(err).To(BeNil())
@@ -381,6 +384,7 @@ var _ = Describe("Filter Plugin", func() {
 			pol := &spyrev1alpha1.SpyreClusterPolicy{
 				ObjectMeta: metav1.ObjectMeta{Name: spyrepolName},
 				Spec: spyrev1alpha1.SpyreClusterPolicySpec{
+					DevicePlugin: spyrev1alpha1.DevicePluginSpec{Mode: spyrev1alpha1.DevicePluginModeClassic},
 					CardManagement: spyrev1alpha1.CardManagementSpec{
 						Enabled: cardmgmtEnabled,
 						Config: &spyrev1alpha1.CardManagementConfig{
