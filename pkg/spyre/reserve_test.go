@@ -105,6 +105,9 @@ var _ = Describe("Reserve", Ordered, func() {
 				ctx = context.Background()
 				pol := &spyrev1alpha1.SpyreClusterPolicy{
 					ObjectMeta: metav1.ObjectMeta{Name: spyrepolName},
+					Spec: spyrev1alpha1.SpyreClusterPolicySpec{
+						DevicePlugin: spyrev1alpha1.DevicePluginSpec{Mode: spyrev1alpha1.DevicePluginModeClassic},
+					},
 				}
 				pol, err := spyreClient.CreateSpyreClusterPolicy(ctx, pol)
 				Expect(err).To(BeNil())
@@ -405,6 +408,9 @@ var _ = Describe("Reserve", Ordered, func() {
 				ctx = context.Background()
 				pol := &spyrev1alpha1.SpyreClusterPolicy{
 					ObjectMeta: metav1.ObjectMeta{Name: spyrepolName},
+					Spec: spyrev1alpha1.SpyreClusterPolicySpec{
+						DevicePlugin: spyrev1alpha1.DevicePluginSpec{Mode: spyrev1alpha1.DevicePluginModeClassic},
+					},
 				}
 				pol, err := spyreClient.CreateSpyreClusterPolicy(ctx, pol)
 				Expect(err).To(BeNil())
@@ -799,6 +805,9 @@ var _ = Describe("Reserve", Ordered, func() {
 				ctx = context.Background()
 				p := &spyrev1alpha1.SpyreClusterPolicy{
 					ObjectMeta: metav1.ObjectMeta{Name: spyrepolName},
+					Spec: spyrev1alpha1.SpyreClusterPolicySpec{
+						DevicePlugin: spyrev1alpha1.DevicePluginSpec{Mode: spyrev1alpha1.DevicePluginModeClassic},
+					},
 				}
 				p, err = spyreClient.CreateSpyreClusterPolicy(ctx, p)
 				Expect(err).To(BeNil())

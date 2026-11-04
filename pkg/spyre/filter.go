@@ -133,7 +133,12 @@ func userPodAllowedOnNode(pod *corev1.Pod, nodeName, resourceName string,
 	// An error status would send the Pod round the backoff queue for as
 	// long as the policy stays unready; rejecting it instead parks it until
 	// the policy changes.
-	if spyrepol.Status.State != spyrev1alpha1.Ready {
+	// Degraded still schedules: the per-node checks below keep the Pod off the
+	// nodes that cannot serve it. Any other state (including ones added later)
+	// is rejected.
+	switch spyrepol.Status.State {
+	case spyrev1alpha1.Ready, spyrev1alpha1.Degraded:
+	default:
 		return framework.NewStatus(framework.UnschedulableAndUnresolvable,
 			fmt.Sprintf("SpyreClusterPolicy is not ready: %s", spyrepol.Status.State))
 	}
