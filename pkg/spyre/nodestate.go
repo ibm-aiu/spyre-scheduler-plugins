@@ -105,6 +105,12 @@ func (s *nodeStateStore) get(ctx context.Context, nodeName string) (*spyrev1alph
 	}
 }
 
+// servesFromCache reports whether get is answered by the cache, which may be
+// behind the API. When it is not, get already returns what the API has.
+func (s *nodeStateStore) servesFromCache() bool {
+	return s.cache != nil && s.synced()
+}
+
 // getLive reads the SpyreNodeState of nodeName from the API, by object name when
 // it is known.
 func (s *nodeStateStore) getLive(ctx context.Context, nodeName, objName string) (*spyrev1alpha1.SpyreNodeState, error) {
