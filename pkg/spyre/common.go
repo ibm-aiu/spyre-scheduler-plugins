@@ -748,7 +748,7 @@ func (ap *SpyrePlugin) pruneStaleReservations(
 				kept = append(kept, e)
 				continue
 			}
-			klog.V(4).Infof("releasing stale reservation of %v held by %s/%s (uid: %s) in pool %s",
+			klog.Infof("releasing stale reservation of %v held by %s/%s (uid: %s) in pool %s",
 				e.DeviceList, e.Pod.Namespace, e.Pod.Name, e.Pod.UID, resName)
 		}
 		if len(kept) == len(r.Entries) {

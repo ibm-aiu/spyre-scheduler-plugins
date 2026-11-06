@@ -79,7 +79,7 @@ func isSchedulableAfterNodeStateChange(logger klog.Logger, pod *corev1.Pod, oldO
 		return fwk.Queue, nil
 	}
 	if released := takenDevices(oldState).Difference(takenDevices(newState)); released.Len() > 0 {
-		logger.V(4).Info("devices released", "pod", klog.KObj(pod), "node", newState.Spec.NodeName,
+		logger.Info("devices released", "pod", klog.KObj(pod), "node", newState.Spec.NodeName,
 			"devices", sets.List(released))
 		return fwk.Queue, nil
 	}
@@ -125,6 +125,6 @@ func isSchedulableAfterPodDeletion(logger klog.Logger, pod *corev1.Pod, oldObj, 
 	if err != nil || len(m) == 0 {
 		return fwk.QueueSkip, nil
 	}
-	logger.V(4).Info("Pod holding Spyre devices deleted", "pod", klog.KObj(pod), "deletedPod", klog.KObj(deleted))
+	logger.Info("Pod holding Spyre devices deleted", "pod", klog.KObj(pod), "deletedPod", klog.KObj(deleted))
 	return fwk.Queue, nil
 }

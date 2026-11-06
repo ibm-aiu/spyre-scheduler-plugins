@@ -112,6 +112,44 @@ var _ = Describe("SpyreNodeState cache", Ordered, func() {
 		Expect(err).To(HaveOccurred())
 	})
 
+	It("takes the word of the API over a cache that has no room in Filter", func() {
+		// The cache claims every device is taken but the API has eight free:
+		// the release has not reached the cache yet. Rejecting the Pod would
+		// park it until the periodic flush, because the update that carried the
+		// release has already been judged and is not coming again.
+		cacheNodeState(reserveEverything)
+		before := apiNodeState()
+
+		mine := buildPod("mine", appNs, spyreconst.PfResourceName, 1)
+		status := spyre.ExportFilter(ap, ctx, mine, nodeName)
+		Expect(status.IsSuccess()).Should(BeTrue(), status.Message())
+
+		// Filter read from the API but did not write to it.
+		Expect(apiNodeState().ResourceVersion).Should(Equal(before.ResourceVersion))
+		// The cache has caught up with the API.
+		cached, err := nodeStateCache.Get(nodeName)
+		Expect(err).To(BeNil())
+		cachedState := cached.(*spyrev1alpha1.SpyreNodeState).DeepCopy()
+		cachedState.Status.NormalizeReservations()
+		Expect(cachedState.Status.ReservedDevices()).Should(ConsistOf(before.Status.ReservedDevices()))
+		Expect(cachedState.Status.ReservedDevices()).ShouldNot(HaveLen(len(cachedState.Spec.SpyreInterfaces)))
+	})
+
+	It("still rejects in Filter when the API has no room either", func() {
+		s := apiNodeState()
+		reserveEverything(s)
+		_, err := spyreClient.UpdateStatus(ctx, s, false)
+		Expect(err).To(BeNil())
+		cacheNodeState(nil)
+		before := apiNodeState()
+
+		mine := buildPod("mine", appNs, spyreconst.PfResourceName, 1)
+		status := spyre.ExportFilter(ap, ctx, mine, nodeName)
+		Expect(status.Code()).Should(Equal(fwk.UnschedulableAndUnresolvable), status.Message())
+		Expect(status.Message()).Should(Equal("not enough devices remain (spyre_pf): 1 requested"))
+		Expect(apiNodeState().ResourceVersion).Should(Equal(before.ResourceVersion))
+	})
+
 	It("leaves the node state alone in Filter", func() {
 		// The holder is being scheduled again, so its earlier reservation is
 		// stale. Filter must judge the node without it, but dropping it for

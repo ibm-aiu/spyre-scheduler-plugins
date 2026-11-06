@@ -61,7 +61,11 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 
 	// card management Pod
 	if isCardManagementPod(pod, spyrepol.Status.Namespace) {
-		if _, err = ap.SelectDevicesForCardManagement(pod, nodeState, nodeName); err != nil {
+		err = ap.selectOrRecheck(ctx, pod, nodeName, nodeState, func(s *spyrev1alpha1.SpyreNodeState) error {
+			_, err := ap.SelectDevicesForCardManagement(pod, s, nodeName)
+			return err
+		})
+		if err != nil {
 			return selectionFailure(err, pod, nodeName,
 				fmt.Sprintf("%s for card management Pod", errNotEnoughDevices))
 		}
@@ -91,11 +95,61 @@ func (ap *SpyrePlugin) filter(ctx context.Context, pod *corev1.Pod, nodeName str
 		}
 	}
 
-	if _, err = selectDevicesFromState(nodeState, isCardMgmtRunner, resourceName, numRequested); err != nil {
+	err = ap.selectOrRecheck(ctx, pod, nodeName, nodeState, func(s *spyrev1alpha1.SpyreNodeState) error {
+		_, err := selectDevicesFromState(s, isCardMgmtRunner, resourceName, numRequested)
+		return err
+	})
+	if err != nil {
 		return selectionFailure(err, pod, nodeName,
 			fmt.Sprintf("%s (%s): %d requested", errNotEnoughDevices, resourceName, numRequested))
 	}
 	return framework.NewStatus(framework.Success)
+}
+
+// selectOrRecheck runs selectFn against nodeState, which came from the cache.
+//
+// A shortage of devices is the one verdict worth double-checking. The cache can
+// be behind the API, and a Pod that is rejected because of a release the cache
+// has not seen yet is parked in the unschedulable queue: the SpyreNodeState
+// update that would have woken it has already been delivered and judged, so only
+// the periodic flush brings the Pod back, minutes later. So on a shortage the
+// node state is read from the API once, and that verdict is the one that counts.
+//
+// The live copy is assumed into the cache, so that the next cycle starts from
+// it. Filter still never writes to the API.
+//
+// When the live read fails, the shortage found in the cache stands: the Pod is
+// rejected as it would have been, and the next SpyreNodeState event retries it.
+func (ap *SpyrePlugin) selectOrRecheck(ctx context.Context, pod *corev1.Pod, nodeName string,
+	nodeState *spyrev1alpha1.SpyreNodeState, selectFn func(*spyrev1alpha1.SpyreNodeState) error) error {
+
+	err := selectFn(nodeState)
+	if !errors.Is(err, errNotEnoughDevices) || !ap.nodeStates.servesFromCache() {
+		return err
+	}
+
+	live, liveErr := ap.nodeStates.getLive(ctx, nodeName, nodeState.Name)
+	if liveErr != nil {
+		klog.V(4).InfoS("cannot recheck shortage against the API, keeping the cached verdict",
+			"pod", klog.KObj(pod), "node", nodeName, "error", liveErr)
+		return err
+	}
+	// Record the state as the API has it, before pruning edits it in memory.
+	ap.nodeStates.assume(live)
+
+	live.Status.NormalizeReservations()
+	if pruneErr := ap.pruneStaleReservations(live, pod); pruneErr != nil {
+		klog.V(4).InfoS("cannot prune the live node state, keeping the cached verdict",
+			"pod", klog.KObj(pod), "node", nodeName, "error", pruneErr)
+		return err
+	}
+	liveVerdict := selectFn(live)
+	if liveVerdict == nil {
+		klog.InfoS("stale SpyreNodeState cache detected: the API has room the cache did not",
+			"pod", klog.KObj(pod), "node", nodeName,
+			"cachedVersion", nodeState.ResourceVersion, "liveVersion", live.ResourceVersion)
+	}
+	return liveVerdict
 }
 
 // nodeStateForFilter returns the state of nodeName as Filter should judge it, or
