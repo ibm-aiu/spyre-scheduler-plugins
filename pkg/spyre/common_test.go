@@ -959,6 +959,106 @@ var _ = Describe("Common functions", func() {
 	})
 })
 
+// SelectDevicesForCardManagement reads only the given SpyreNodeState, so it needs no API server.
+var _ = Describe("SelectDevicesForCardManagement with cards that have no first VF", func() {
+
+	const (
+		opNs     = "spyre-operator"
+		nodeName = "node-no-vf"
+	)
+
+	cardmgmtPod := func(numPfs, numVfs int) *corev1.Pod {
+		limits := corev1.ResourceList{}
+		if numPfs > 0 {
+			limits[corev1.ResourceName(spyreconst.ResourcePrefix+"/"+spyreconst.PfResourceName)] = *resource.NewQuantity(int64(numPfs), resource.DecimalSI)
+		}
+		if numVfs > 0 {
+			limits[corev1.ResourceName(spyreconst.ResourcePrefix+"/"+spyreconst.VfResourceName)] = *resource.NewQuantity(int64(numVfs), resource.DecimalSI)
+		}
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cardmgmt", Namespace: opNs,
+				Labels: map[string]string{"app": "cardmgmt"},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{
+					Name: "c1", Image: "image",
+					Resources: corev1.ResourceRequirements{Limits: limits},
+				}},
+			},
+		}
+	}
+
+	// 02.0 has no VF at all, and 04.0 has VFs but not the first one (04.1).
+	newNodeState := func() *spyrev1alpha1.SpyreNodeState {
+		return &spyrev1alpha1.SpyreNodeState{
+			ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+			Spec: spyrev1alpha1.SpyreNodeStateSpec{
+				NodeName: nodeName,
+				SpyreInterfaces: []spyrev1alpha1.SpyreInterface{
+					{PciAddress: "01.0", NumVfs: 1, Vfs: []string{"01.1"}, Health: spyrev1alpha1.SpyreHealthy},
+					{PciAddress: "02.0", NumVfs: 0, Health: spyrev1alpha1.SpyreHealthy},
+					{PciAddress: "03.0", NumVfs: 2, Vfs: []string{"03.1", "03.2"}, Health: spyrev1alpha1.SpyreHealthy},
+					{PciAddress: "04.0", NumVfs: 1, Vfs: []string{"04.2"}, Health: spyrev1alpha1.SpyreHealthy},
+				},
+			},
+		}
+	}
+
+	var ap *spyre.SpyrePlugin
+
+	BeforeEach(func() {
+		ap = &spyre.SpyrePlugin{}
+	})
+
+	It("selects only the cards whose first VF exists", func() {
+		devs, err := spyre.SelectDevicesForCardManagement(ap, cardmgmtPod(2, 2), newNodeState(), nodeName)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(devs[spyreconst.PfResourceName]).To(Equal([]string{"01.0", "03.0"}))
+		Expect(devs[spyreconst.VfResourceName]).To(Equal([]string{"01.1", "03.1"}))
+	})
+
+	It("does not select the PF of a card without its first VF even when only PFs are requested", func() {
+		_, err := spyre.SelectDevicesForCardManagement(ap, cardmgmtPod(3, 0), newNodeState(), nodeName)
+		Expect(err).To(MatchError(spyre.ErrNotEnoughDevices))
+	})
+
+	It("fails when more cards are requested than the cards that have their first VF", func() {
+		_, err := spyre.SelectDevicesForCardManagement(ap, cardmgmtPod(4, 4), newNodeState(), nodeName)
+		Expect(err).To(MatchError(spyre.ErrNotEnoughDevices))
+		Expect(err).To(MatchError(ContainSubstring("2/4 PFs and 2/4 VFs")))
+	})
+
+	// The number of devices a card management Pod requests does not depend on health,
+	// so unhealthy cards are handed to it as well.
+	It("does not consider health", func() {
+		s := newNodeState()
+		s.Status.UnhealthyDevices = []spyrev1alpha1.UnhealthyDevice{
+			{ID: "01.0", State: "IN_ERROR"}, {ID: "01.1", State: "IN_ERROR"}}
+		devs, err := spyre.SelectDevicesForCardManagement(ap, cardmgmtPod(2, 2), s, nodeName)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(devs[spyreconst.PfResourceName]).To(Equal([]string{"01.0", "03.0"}))
+		Expect(devs[spyreconst.VfResourceName]).To(Equal([]string{"01.1", "03.1"}))
+	})
+
+	DescribeTable("skips a card as a whole when its PF or first VF is occupied",
+		func(allocated []string, reserved []string) {
+			s := newNodeState()
+			s.Status.AllocationList = []spyrev1alpha1.Allocation{{DeviceList: allocated}}
+			s.Status.Reservations = map[string]spyrev1alpha1.Reservation{
+				"spyre_vf": {DeviceSets: [][]string{reserved}},
+			}
+			devs, err := spyre.SelectDevicesForCardManagement(ap, cardmgmtPod(1, 1), s, nodeName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(devs[spyreconst.PfResourceName]).To(Equal([]string{"03.0"}))
+			Expect(devs[spyreconst.VfResourceName]).To(Equal([]string{"03.1"}))
+		},
+		Entry("PF allocated", []string{"01.0"}, []string{}),
+		Entry("first VF allocated", []string{"01.1"}, []string{}),
+		Entry("first VF reserved", []string{}, []string{"01.1"}),
+	)
+})
+
 // prunedNodeState returns the state of node with the reservations that Filter
 // and Reserve treat as stale when scheduling pod removed.
 func prunedNodeState(ap *spyre.SpyrePlugin, node string, pod *corev1.Pod) (*spyrev1alpha1.SpyreNodeState, error) {

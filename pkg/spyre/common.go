@@ -196,9 +196,14 @@ func selectDevicesFromState(nodeState *spyrev1alpha1.SpyreNodeState, isPrivilege
 }
 
 // SelectDevicesForCardManagement selects devices for the first container of cardmgmt Pod.
-// The VF address is simply derived by replacing PF device suffix (".0") with ".1".
+// The VF address is derived by replacing PF device suffix (".0") with ".1".
 // For example, if there are two PFs (00:01.0 and 00:02.0), then their first VFs (00:01.1 and 00.02.1)
 // will be selected as well.
+// A PF whose first VF is not listed in SpyreInterface.Vfs (e.g. the VF has not been generated) is skipped
+// as a whole, i.e. neither the PF nor the VF is selected, so that a card management Pod is never given
+// a VF which does not exist. A card is selected only when both its PF and its first VF are neither allocated
+// nor reserved, so the PFs and the VFs always come from the same cards. Health is not considered, so that
+// an unhealthy card is still handed to the card management Pod.
 // This function will return error if any of the target PFs or VFs are not available.
 func (ap *SpyrePlugin) SelectDevicesForCardManagement(pod *corev1.Pod, nodeState *spyrev1alpha1.SpyreNodeState, nodeName string) (map[string][]string, error) { //nolint:lll
 
@@ -225,11 +230,23 @@ func (ap *SpyrePlugin) SelectDevicesForCardManagement(pod *corev1.Pod, nodeState
 					len(pfs), numPfs, len(vfs), numVfs)
 		}
 		sIf := nodeState.Spec.SpyreInterfaces[i]
-		if len(pfs) < numPfs && isAvailable(nodeState, sIf.PciAddress) {
+		vf := strings.Replace(sIf.PciAddress, ".0", ".1", 1)
+		if !slices.Contains(sIf.Vfs, vf) {
+			klog.V(4).InfoS("skip the card without its first VF for card management",
+				"pf", sIf.PciAddress, "vf", vf, "node", nodeName)
+			continue
+		}
+		// A card is selected only when both its PF and its first VF are free, so that the PFs and the VFs
+		// always come from the same cards. Health is deliberately ignored: the number of devices a card
+		// management Pod requests does not depend on health, and a card management Pod that is given an
+		// unhealthy card only fails on that card, while the healthy cards keep being managed.
+		if isOccupied(nodeState, sIf.PciAddress) || isOccupied(nodeState, vf) {
+			continue
+		}
+		if len(pfs) < numPfs {
 			pfs = append(pfs, sIf.PciAddress)
 		}
-		vf := strings.Replace(sIf.PciAddress, ".0", ".1", 1)
-		if len(vfs) < numVfs && isAvailable(nodeState, vf) {
+		if len(vfs) < numVfs {
 			vfs = append(vfs, vf)
 		}
 	}
@@ -535,17 +552,20 @@ func isAvailable(nodeState *spyrev1alpha1.SpyreNodeState, d string) bool {
 			return false
 		}
 	}
+	return !isOccupied(nodeState, d)
+}
+
+// isOccupied returns true if d is allocated to a Pod or reserved for one.
+// Health is not considered.
+func isOccupied(nodeState *spyrev1alpha1.SpyreNodeState, d string) bool {
 	for _, a := range nodeState.Status.AllocationList {
 		if slices.Contains(a.DeviceList, d) {
-			return false
+			return true
 		}
 	}
 	// Every reservation counts, whichever Pod holds it and whichever resource
 	// pool it lives in.
-	if slices.Contains(allReservedDevices(nodeState), d) {
-		return false
-	}
-	return true
+	return slices.Contains(allReservedDevices(nodeState), d)
 }
 
 // reservedDevices returns every device a reservation covers, as the union of its
